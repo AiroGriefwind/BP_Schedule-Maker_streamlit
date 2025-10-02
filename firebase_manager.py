@@ -1,93 +1,164 @@
-import streamlit as st
-import firebase_admin
-from firebase_admin import credentials, db
+# utils/firebase_logging.py
+
+import uuid
+import datetime as dt
+import pytz
+import os
 import json
 
-# Use st.cache_resource to initialize Firebase only once
-@st.cache_resource
-def initialize_firebase():
-    """
-    Initializes the Firebase Admin SDK using credentials from Streamlit secrets.
-    """
-    try:
-        # Get credentials from secrets
-        creds_dict = st.secrets["firebase"]["service_account"]
-        database_url = st.secrets["firebase"]["database_url"]
-        storage_bucket = st.secrets["firebase"]["storage_bucket"]
-        
-        # Check if private_key has newline characters and format it
-        if "\\n" in creds_dict["private_key"]:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+import firebase_admin
+from firebase_admin import credentials, db, storage
 
-        cred = credentials.Certificate(creds_dict)
-        
-        # Check if the app is already initialized
-        if not firebase_admin._apps:
-            firebase_admin.initialize_app(cred, {
-                'databaseURL': database_url,
-                'storageBucket': storage_bucket
-            })
-        print("Firebase Initialized Successfully.")
-        return True
-    except Exception as e:
-        st.error(f"Failed to initialize Firebase: {e}")
-        return False
+HKT = pytz.timezone('Asia/Hong_Kong')
 
-def get_data(path):
-    """
-    Retrieves data from a specified path in the Firebase Realtime Database.
-    
-    Args:
-        path (str): The path to the data (e.g., 'employees', 'role_rules').
-        
-    Returns:
-        dict: The data from Firebase, or None if the path doesn't exist.
-    """
-    try:
-        ref = db.reference(f'/{path}')
-        return ref.get()
-    except Exception as e:
-        st.error(f"Error getting data from Firebase at path '{path}': {e}")
-        return None
+_LOGGER = None  # kept for backward compatibility, but we now prefer session_state
 
-def save_data(path, data):
-    """
-    Saves data to a specified path in the Firebase Realtime Database.
-    This will overwrite any existing data at that path.
-    
-    Args:
-        path (str): The path to save the data (e.g., 'employees').
-        data (dict or list): The data to save.
-    """
-    try:
-        ref = db.reference(f'/{path}')
-        ref.set(data)
-        st.success(f"Data successfully saved to Firebase path: '{path}'")
-    except Exception as e:
-        st.error(f"Error saving data to Firebase at path '{path}': {e}")
 
-def upload_initial_data():
-    """
-    One-time function to upload local JSON files to Firebase.
-    """
-    files_to_upload = {
-        "employees": "employees.json",
-        "role_rules": "role_rules.json",
-        "availability": "availability.json"
-    }
+def _get_or_create_session_id(st):
+    key = "_session_id"
+    if key not in st.session_state:
+        st.session_state[key] = uuid.uuid4().hex
+    return st.session_state[key]
 
-    st.write("Checking for initial data in Firebase...")
-    for path, filename in files_to_upload.items():
-        if get_data(path) is None:
-            st.write(f"Data for '{path}' not found in Firebase. Uploading from {filename}...")
-            try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                save_data(path, data)
-            except FileNotFoundError:
-                st.warning(f"Local file {filename} not found. Skipping initial upload for '{path}'.")
-            except Exception as e:
-                st.error(f"Failed to upload {filename}: {e}")
-        else:
-            st.write(f"Data for '{path}' already exists in Firebase. Skipping upload.")
 
+class FirebaseLogger:
+    def __init__(self, st, run_context=None):
+
+        self.st = st
+        self.bucket = None      # Will be set if Firebase enabled
+        self.events_ref = None  # Points to runs/<run_id>/events
+        self.screens_ref = None # Points to runs/<run_id>/screens
+        self.run_ref = None     # Points to this run's root
+        self.run_id = None
+        self.session_id = _get_or_create_session_id(st)
+
+        if "firebase" in st.secrets:
+            svc_dict = dict(st.secrets["firebase"]["service_account"])
+            bucket = st.secrets.get("firebase", {}).get("storage_bucket") or f"{svc_dict['project_id']}.appspot.com"
+
+            db_url = st.secrets["firebase"]["database_url"]  # Ensure you have this in secrets.toml
+
+            # Initialize firebase only once per process
+            if not firebase_admin._apps:
+                cred = credentials.Certificate(svc_dict)
+                app = firebase_admin.initialize_app(cred, {
+                    "databaseURL": db_url,
+                    "storageBucket": bucket,
+                })
+            else:
+                app = firebase_admin.get_app()
+
+            # Reference: logs/streamlit/<session_id>
+            self.db = db.reference(f"logs/streamlit/{self.session_id}")
+
+            # --- START OF RUN-ISOLATION PATCH ---
+            # Create a new, sortable run_id: e.g. 20250912T161100_ab1c2d
+
+            # Use current time in HKT for run_id (for local files/folders)
+            now_hkt = dt.datetime.now(HKT)
+            self.run_id = now_hkt.strftime("%Y%m%dT%H%M%S") + "_" + uuid.uuid4().hex[:6]
+            self.local_log_events = []
+            # Pointer to this run:
+            self.run_ref = self.db.child("runs").child(self.run_id)
+            self.events_ref = self.run_ref.child("events")
+            self.screens_ref = self.run_ref.child("screens")
+            # Mark start/meta fields
+            meta = {
+                "started_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+            }
+            if run_context:
+                meta["context"] = run_context
+            self.run_ref.update(meta)
+
+            # Set up gs bucket as before
+            self.bucket = storage.bucket(app=app)
+
+
+    def info(self, msg, **extra):
+        self._event("INFO", msg, extra)
+
+    def warn(self, msg, **extra):
+        self._event("WARN", msg, extra)
+
+    def error(self, msg, **extra):
+        self._event("ERROR", msg, extra)
+
+    def _event(self, level, message, extra=None):
+        # Only log to local, NOT Firebase DB
+        payload = {
+                    "ts": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "level": level,
+                    "message": message
+                }
+        if extra:
+            payload.update(extra)
+        self.local_log_events.append(payload)
+        # DO NOT: self.events_ref.push(payload)
+
+    def upload_file_to_firebase(self, local_fp, remote_path):
+        blob = self.bucket.blob(remote_path)
+        blob.upload_from_filename(local_fp)
+        return f"gs://{self.bucket.name}/{remote_path}"
+
+    def export_log_json(self, log_dir):
+        # Write file locally as before
+        os.makedirs(log_dir, exist_ok=True)
+        fp = os.path.join(log_dir, f"{self.run_id}_logs.json")
+        with open(fp, "w", encoding="utf-8") as f:
+            json.dump(self.local_log_events, f, ensure_ascii=False, indent=2)
+        return fp
+
+    def upload_scrcap_to_firebase(self, local_fp, name_hint="screenshot"):
+        # Upload individual screenshot file
+        run_screens_dir = f"runs/{self.session_id}/{self.run_id}/screens/"
+        remote_path = run_screens_dir + os.path.basename(local_fp)
+        return self.upload_file_to_firebase(local_fp, remote_path)
+
+    def upload_json_to_firebase(self, json_fp):
+        run_dir = f"runs/{self.session_id}/{self.run_id}/"
+        remote_path = run_dir + os.path.basename(json_fp)
+        return self.upload_file_to_firebase(json_fp, remote_path)
+
+
+    def end_run(self, status="completed", summary=None):
+        if self.run_ref:
+            self.run_ref.update({
+                "ended_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                 "status": status,
+                 "summary": summary or {},
+             })
+
+
+def ensure_logger(st, run_context=None):
+    # Prefer a per-session singleton stored in session_state
+    if "fb_logger" not in st.session_state:
+        st.session_state["fb_logger"] = FirebaseLogger(st, run_context=run_context)
+    elif run_context and st.session_state["fb_logger"].run_ref:
+        st.session_state["fb_logger"].run_ref.update({"context": run_context})
+    return st.session_state["fb_logger"]
+
+
+def get_logger(st):
+    # Convenience accessor if needed elsewhere
+    return st.session_state.get("fb_logger")
+
+
+def patch_streamlit_logging(st):
+    fb = ensure_logger(st)
+    originals = {}
+    for name in ["write", "info", "warning", "error", "success", "code"]:
+        orig = getattr(st, name)
+        originals[name] = orig
+
+        def make_logged(fn, fname=name):
+            def inner(*args, **kwargs):
+                msg = " ".join(str(a) for a in args) if args else ""
+                if fname in ["error", "warning"]:
+                    fb.error(msg)
+                else:
+                    fb.info(msg)
+                return fn(*args, **kwargs)
+            return inner
+
+        setattr(st, name, make_logged(orig))
+    return originals
