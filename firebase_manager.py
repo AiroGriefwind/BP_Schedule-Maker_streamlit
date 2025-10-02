@@ -186,3 +186,13 @@ def patch_streamlit_logging(st):
 
         setattr(st, name, make_logged(orig))
     return originals
+
+def get_data(path):
+    """Retrieve data at the given Firebase DB path (string, no leading slash)."""
+    ref = db.reference(path)
+    return ref.get()
+
+def save_data(path, data):
+    """Overwrite data at the given Firebase DB path with the passed dict/list."""
+    ref = db.reference(path)
+    ref.set(data)
