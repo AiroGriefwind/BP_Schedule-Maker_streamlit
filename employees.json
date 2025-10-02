@@ -1,0 +1,240 @@
+[
+    {
+        "name": "TUNG",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Daisy",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "13",
+        "end_time": "22"
+    },
+    {
+        "name": "Tak",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "13",
+        "end_time": "22"
+    },
+    {
+        "name": "Ki",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "IVY",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Colin",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Sylvia",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Caroline",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "15",
+        "end_time": "24"
+    },
+    {
+        "name": "Waiyee",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "10",
+        "end_time": "19"
+    },
+    {
+        "name": "Aasta",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "10",
+        "end_time": "19"
+    },
+    {
+        "name": "Carol",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "10",
+        "end_time": "19"
+    },
+    {
+        "name": "Cindy",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "10",
+        "end_time": "19"
+    },
+    {
+        "name": "Sandy",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Mindy",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Jackie",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "10",
+        "end_time": "19"
+    },
+    {
+        "name": "Candy C",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Huixin",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Helen",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": "0930",
+        "end_time": "1830"
+    },
+    {
+        "name": "Noel",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "lin",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Candy S",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Michelle",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Karina",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Johny",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Edith",
+        "role": "Freelancer",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Helen(F)",
+        "role": "Freelancer",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Lili",
+        "role": "Freelancer",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Matthew",
+        "role": "Freelancer",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Ka",
+        "role": "Freelancer",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Kit",
+        "role": "Freelancer",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Paul",
+        "role": "Freelancer",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "Mokee",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "sang",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    },
+    {
+        "name": "xuejie",
+        "role": "Fulltimers",
+        "additional_roles": [],
+        "start_time": null,
+        "end_time": null
+    }
+]
