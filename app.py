@@ -16,6 +16,7 @@ from scheduling_logic import (
     export_availability_to_excel,
     clear_availability,
     sync_availability,
+    get_last_generated_schedule,
     EMPLOYEES,
     ROLE_RULES,
 )
@@ -92,7 +93,7 @@ if st.sidebar.button("Generate Schedule"):
     with st.spinner("Generating schedule..."):
         warnings = generate_schedule(st.session_state.availability, st.session_state.start_date, export_to_excel=False)
         st.session_state.warnings = warnings
-        st.session_state.generated_schedule = pd.DataFrame(st.session_state.get_last_generated_schedule())
+        st.session_state.generated_schedule = pd.DataFrame(get_last_generated_schedule())
         if not warnings:
             st.toast("✅ Schedule generated successfully!")
         else:

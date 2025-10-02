@@ -1,0 +1,3 @@
+.streamlit/secrets.toml
+migration.py
+__pycache__/firebase_manager.cpython-313.pyc
