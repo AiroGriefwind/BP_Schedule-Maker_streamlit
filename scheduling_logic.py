@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 
 import firebase_manager as fm
 
+ROLE_RULES = {}
+
 def initialize():
     """Initialize the module by loading data from files"""
     load_role_rules()
