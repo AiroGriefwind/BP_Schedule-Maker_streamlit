@@ -7,6 +7,10 @@ from datetime import datetime, timedelta
 
 import firebase_manager as fm
 
+# NEW: Initialize Firebase
+# This runs only once thanks to st.cache_resource
+fm.initialize_firebase()
+
 ROLE_RULES = {}
 
 def initialize():
