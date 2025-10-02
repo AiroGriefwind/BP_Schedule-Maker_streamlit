@@ -5,6 +5,8 @@ from pandas import DataFrame, read_excel, isna, notna
 #from collections import deque  
 from datetime import datetime, timedelta
 
+import firebase_manager as fm
+
 def initialize():
     """Initialize the module by loading data from files"""
     load_role_rules()
@@ -76,20 +78,19 @@ class KoreanEntertainment(Employee):
         return ["10-19"]
 
 def init_employees():
-    try:
-        with open('employees.json', 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            employees = []
-            for emp in data:
-                if emp['role'] == 'Freelancer':
-                    employees.append(Freelancer(emp['name']))  # ← Proper subclass instantiation
-                elif emp['role'] == 'SeniorEditor':
-                    employees.append(SeniorEditor(emp['name']))  # ← Add similar for other roles
-                else:
-                    employees.append(Employee(emp['name'], emp['role']))
-            return employees
-    except FileNotFoundError:
+    employees_raw = fm.get_data('employees')
+    employees = []
+    if employees_raw is None:
         return []
+    for emp in employees_raw:
+        if emp['role'] == 'Freelancer':
+            employees.append(Freelancer(emp['name']))
+        elif emp['role'] == 'SeniorEditor':
+            employees.append(SeniorEditor(emp['name']))
+        else:
+            employees.append(Employee(emp['name'], emp['role']))
+    return employees
+
 
 def init_availability(start_date, employees):
     # Find the previous Sunday to start the calendar
@@ -106,19 +107,14 @@ def init_availability(start_date, employees):
 
 def save_data(data):
     try:
-        with open('availability.json', 'w') as f:
-            json.dump(data, f, indent=4)
-    except IOError as e:
-        raise RuntimeError(f"File write failed: {str(e)}")[1]
-
-
+        fm.save_data('availability', data)
+    except Exception as e:
+        raise RuntimeError(f"Firebase write failed: {str(e)}")
 
 def load_data():
-    try:
-        with open('availability.json', 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
+    data = fm.get_data('availability')
+    return data if data else None
+
 
 # Constants
 EMPLOYEES = init_employees()
@@ -157,18 +153,22 @@ FREELANCERS = [employee.name for employee in EMPLOYEES if isinstance(employee, F
 # }
 
 def load_employees():
-    try:
-        with open('employees.json', 'r') as f:
-            data = json.load(f)
-            return [Employee(
-                emp["name"], 
-                emp["role"], 
-                emp.get("additional_roles", []),
-                emp.get("start_time"), 
-                emp.get("end_time")
-            ) for emp in data]
-    except FileNotFoundError:
+    data = fm.get_data('employees')
+    if not data:
         return init_employees()
+    # If your data is a dict, use `data.values()`; if list, use as is
+    employee_list = data.values() if isinstance(data, dict) else data
+    return [
+        Employee(
+            emp["name"],
+            emp["role"],
+            emp.get("additional_roles", []),
+            emp.get("start_time"),
+            emp.get("end_time")
+        )
+        for emp in employee_list
+    ]
+
 
 
 
@@ -215,14 +215,16 @@ def validate_synchronization():
 
 
 def save_employees():
-    with open('employees.json', 'w') as f:
-        json.dump([{
-            "name": emp.name,
-            "role": emp.employee_type,
-            "additional_roles": emp.additional_roles,
-            "start_time": emp.start_time,
-            "end_time": emp.end_time
-        } for emp in EMPLOYEES], f, indent=4, separators=(',', ': '))
+    # EMPLOYEES is assumed to be your global employee list
+    json_data = [{
+        "name": emp.name,
+        "role": emp.employee_type,
+        "additional_roles": emp.additional_roles,
+        "start_time": emp.start_time,
+        "end_time": emp.end_time
+    } for emp in EMPLOYEES]
+    fm.save_data('employees', json_data)
+
 
 
 def add_employee(name, role, additional_roles=None, start_time=None, end_time=None):
@@ -677,22 +679,21 @@ def add_role(role_name, role_config):
     save_role_rules()
 
 def save_role_rules():
-    """Save the ROLE_RULES dictionary to a JSON file"""
+    """Save the ROLE_RULES dictionary to Firebase."""
     try:
-        with open('role_rules.json', 'w') as f:
-            json.dump(ROLE_RULES, f, indent=4)
+        fm.save_data('role_rules', ROLE_RULES)
     except Exception as e:
         print(f"Error saving role rules: {str(e)}")
 
+
 def load_role_rules():
-    """Load ROLE_RULES from JSON file if it exists"""
+    """Load ROLE_RULES from Firebase if it exists."""
     global ROLE_RULES
-    try:
-        with open('role_rules.json', 'r', encoding='utf-8') as f:
-            ROLE_RULES = json.load(f)
-    except FileNotFoundError:
-        # If file doesn't exist, use the default ROLE_RULES
-        pass
+    data = fm.get_data('role_rules')
+    if data:
+        ROLE_RULES = data
+    # Optionally, else keep the default in memory if not present
+
 
 initialize()    
     

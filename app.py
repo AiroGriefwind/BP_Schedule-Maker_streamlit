@@ -20,12 +20,19 @@ from scheduling_logic import (
     ROLE_RULES,
 )
 
-# --- App Configuration ---
-st.set_page_config(
-    page_title="Employee Availability Editor",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+import firebase_manager as fm
+
+# --- Main App ---
+st.set_page_config(page_title="BP Schedule Maker", layout="wide")
+st.title("Auto-Schedule Maker")
+
+# NEW: Initialize Firebase
+# This runs only once thanks to st.cache_resource
+fm.initialize_firebase()
+
+# NEW: Add a button for one-time data upload (optional but useful)
+if st.button("Upload Initial Data to Firebase"):
+    fm.upload_initial_data()
 
 # --- State Management ---
 def initialize_session_state():
