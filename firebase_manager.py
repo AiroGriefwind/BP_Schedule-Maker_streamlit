@@ -13,6 +13,30 @@ HKT = pytz.timezone('Asia/Hong_Kong')
 
 _LOGGER = None  # kept for backward compatibility, but we now prefer session_state
 
+import streamlit as st
+
+def initialize_firebase():
+    # This supports TOML secrets with private_key as a one-line string with \n's
+    if 'firebase' in st.secrets:
+        svcdict = dict(st.secrets['firebase']['service_account'])
+        bucket = st.secrets['firebase'].get('storage_bucket', f"{svcdict['project_id']}.appspot.com")
+        dburl = st.secrets['firebase']['database_url']
+        # Convert \n to real newlines if required
+        if "\\n" in svcdict["private_key"]:
+            svcdict["private_key"] = svcdict["private_key"].replace("\\n", "\n")
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(svcdict)
+            firebase_admin.initialize_app(
+                cred, {
+                    'databaseURL': dburl,
+                    'storageBucket': bucket
+                }
+            )
+        # Optionally return Firebase DB reference
+        return db.reference("/")
+    else:
+        raise RuntimeError("No firebase config present in Streamlit secrets")
+
 
 def _get_or_create_session_id(st):
     key = "_session_id"

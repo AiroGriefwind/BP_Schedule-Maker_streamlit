@@ -6,11 +6,7 @@ from pandas import DataFrame, read_excel, isna, notna
 from datetime import datetime, timedelta
 
 import firebase_manager as fm
-
-# NEW: Initialize Firebase
-# This runs only once thanks to st.cache_resource
-import streamlit as st
-fm.connect_firebase(st)
+fm.initialize_firebase()
 ROLE_RULES = {}
 
 def initialize():

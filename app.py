@@ -21,15 +21,12 @@ from scheduling_logic import (
 )
 
 import firebase_manager as fm
+fm.initialize_firebase()
 
 # --- Main App ---
 st.set_page_config(page_title="BP Schedule Maker", layout="wide")
 st.title("Auto-Schedule Maker")
 
-# NEW: Initialize Firebase
-# This runs only once thanks to st.cache_resource
-import streamlit as st
-fm.connect_firebase(st)
 
 # NEW: Add a button for one-time data upload (optional but useful)
 if st.button("Upload Initial Data to Firebase"):
