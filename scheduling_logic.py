@@ -180,7 +180,8 @@ def sync_availability():
     
     # Get current employee names
     current_employees = {e.name for e in employees}  # Use e.name
-    
+    if not availability:
+        return
     # Update availability for each date
     for date in availability:
         # Remove deleted employees
