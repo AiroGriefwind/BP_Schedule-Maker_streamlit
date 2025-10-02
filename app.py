@@ -28,7 +28,8 @@ st.title("Auto-Schedule Maker")
 
 # NEW: Initialize Firebase
 # This runs only once thanks to st.cache_resource
-fm.initialize_firebase()
+import streamlit as st
+fm.connect_firebase(st)
 
 # NEW: Add a button for one-time data upload (optional but useful)
 if st.button("Upload Initial Data to Firebase"):

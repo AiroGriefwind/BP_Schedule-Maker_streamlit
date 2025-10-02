@@ -9,8 +9,8 @@ import firebase_manager as fm
 
 # NEW: Initialize Firebase
 # This runs only once thanks to st.cache_resource
-fm.initialize_firebase()
-
+import streamlit as st
+fm.connect_firebase(st)
 ROLE_RULES = {}
 
 def initialize():
