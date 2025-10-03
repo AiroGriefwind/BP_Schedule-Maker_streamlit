@@ -108,7 +108,14 @@ if main_shift_file:
         None  # We'll handle the add below, not automated
     )
 
-    st.session_state.imported_col_order = names_detected
+    df = pd.read_excel(main_shift_file, header=None)
+    imported_col_order = []
+    for name in df.iloc[0]:
+        if pd.notna(name):
+            str_name = str(name).strip()
+            if str_name and str_name not in imported_col_order:
+                imported_col_order.append(str_name)
+    st.session_state.imported_col_order = imported_col_order
     
     # Identify employees present in the system but NOT in the imported sheet
     extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
