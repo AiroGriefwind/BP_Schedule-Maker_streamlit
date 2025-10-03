@@ -120,6 +120,12 @@ if main_shift_file:
     sheet_dates = [str(x).strip() for x in df.iloc[1:, 0] if pd.notna(x) and str(x).strip()]
     st.session_state.imported_sheet_dates = sheet_dates
 
+    if sheet_dates:
+        st.sidebar.info(f"First date detected: {sheet_dates[0]}")
+        st.sidebar.info(f"Last date detected: {sheet_dates[-1]}")
+    else:
+        st.sidebar.warning("No dates detected in imported sheet.")
+
     # Identify employees present in the system but NOT in the imported sheet
     extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
     st.session_state.extra_employees = extra_employees
