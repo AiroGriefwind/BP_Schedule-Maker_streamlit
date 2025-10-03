@@ -171,7 +171,25 @@ def load_employees():
         for emp in employee_list
     ]
 
-
+def import_employees_from_main_excel(excel_file, current_employees, addemployee_callback):
+    """
+    Read first row employee names from the main shift sheet Excel,
+    compare with current employees, and prompt to add if missing.
+    :param excel_file: Uploaded file obj or file path (xlsx)
+    :param current_employees: list of employee names (str)
+    :param addemployee_callback: function to add employees, expects (name, role, start, end)
+    :return: names_detected, names_missing
+    """
+    # Accept either file path or uploaded file object (for Streamlit compatibility)
+    df = pd.read_excel(excel_file, header=None)
+    names_detected = [str(x).strip() for x in df.iloc[0] if pd.notna(x) and str(x).strip()]
+    names_missing = [name for name in names_detected if name not in current_employees]
+    added = []
+    # Callback lets UI handle missing employee input, so no input here
+    for name in names_missing:
+        # addemployee_callback expected to prompt UI/form in streamlit; info to be provided there
+        added.append(name)
+    return names_detected, names_missing
 
 
 def sync_availability():

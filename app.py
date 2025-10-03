@@ -10,6 +10,7 @@ from scheduling_logic import (
     init_availability,
     generate_schedule,
     import_from_google_form,
+    import_employees_from_main_excel,
     add_employee,
     edit_employee,
     delete_employee,
@@ -87,6 +88,36 @@ initialize_session_state()
 # --- Sidebar UI ---
 st.sidebar.title("🗓️ Schedule Maker")
 st.sidebar.write("Manage employee availability and generate schedules.")
+
+st.sidebar.header("Main Shift Employee Import")
+main_shift_file = st.sidebar.file_uploader("Upload Main Shift Excel", type=["xlsx"])
+
+if main_shift_file:
+    # Pull current employee names for live comparison
+    current_employee_names = [e.name for e in st.session_state.employees]
+    names_detected, names_missing = import_employees_from_main_excel(
+        main_shift_file,
+        current_employee_names,
+        None  # We'll handle the add below, not automated
+    )
+
+    st.sidebar.write("Detected Employees from Sheet:")
+    st.sidebar.write(", ".join(names_detected))
+    if names_missing:
+        st.sidebar.warning(f"Missing employees in system: {', '.join(names_missing)}")
+        # Prompt user to input all details for each new employee
+        for name in names_missing:
+            with st.sidebar.form(key=f"add_{name}_form"):
+                st.write(f"Add employee: {name}")
+                role = st.selectbox(f"Role for {name}", list(ROLE_RULES.keys()))
+                shift = st.text_input(f"Shift for {name} (e.g., 10-19)")
+                start, end = None, None
+                if "-" in shift:
+                    start, end = shift.split("-", 1)
+                submit = st.form_submit_button("Add Employee")
+                if submit:
+                    add_employee(name, role, start, end)
+                    st.success(f"Employee {name} added.")
 
 st.sidebar.header("Actions")
 if st.sidebar.button("Generate Schedule"):
