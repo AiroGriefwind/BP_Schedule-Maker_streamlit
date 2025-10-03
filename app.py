@@ -114,6 +114,20 @@ if main_shift_file:
     extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
     st.session_state.extra_employees = extra_employees
 
+    if "extra_employees" in st.session_state and st.session_state.extra_employees:
+        st.sidebar.subheader("Employees not in imported sheet")
+        for extra_name in st.session_state.extra_employees:
+            with st.sidebar.form(key=f"remove_{extra_name}_form"):
+                st.write(f"Employee '{extra_name}' found in system but NOT in imported main sheet.")
+                remove = st.form_submit_button(f"Remove '{extra_name}'")
+                if remove:
+                    delete_employee(extra_name)
+                    st.session_state.extra_employees.remove(extra_name)
+                    st.toast(f"🗑️ Employee '{extra_name}' removed from system (not in latest main sheet import).")
+                    st.session_state.initialized = False
+                    st.rerun()
+
+
     st.sidebar.write("Detected Employees from Sheet:")
     st.sidebar.write(", ".join(names_detected))
     if names_missing:
@@ -267,8 +281,10 @@ else:
 availability_df = availability_to_dataframe()
 
 if not availability_df.empty:
-    # Filter columns based on selected role
-    display_df = availability_df[filtered_employees]
+    # Only show employees present in both filtered_employees and the dataframe columns
+    display_columns = [emp for emp in filtered_employees if emp in availability_df.columns]
+    display_df = availability_df[display_columns]
+
     
     st.info("You can directly edit the cells below. Changes are saved when you click 'Save All Changes'.")
     edited_df = st.data_editor(display_df, height=600)
