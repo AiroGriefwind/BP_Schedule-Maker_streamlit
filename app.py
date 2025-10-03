@@ -62,15 +62,21 @@ def availability_to_dataframe():
         return pd.DataFrame()
 
     df = pd.DataFrame(availability_dict).T
-    # Ensure all employees are columns
-    emp_names = [emp.name for emp in st.session_state.employees]
-    for emp in emp_names:
+
+    # --- NEW: Use imported order as the employee column order if available ---
+    if "imported_col_order" in st.session_state:
+        col_order = [col for col in st.session_state.imported_col_order if col]  # remove any blank/None
+    else:
+        col_order = [emp.name for emp in st.session_state.employees]
+    # Ensure all imported columns are present in df, even if empty
+    for emp in col_order:
         if emp not in df.columns:
             df[emp] = [[] for _ in range(len(df))]
-            
-    df = df[emp_names] # Ensure correct order
+    df = df[col_order]  # This sets the display order
+
     # Convert lists to comma-separated strings for st.data_editor
     return df.applymap(lambda x: ', '.join(map(str, x)) if isinstance(x, list) else x)
+
 
 def dataframe_to_availability(edited_df):
     """Converts the edited DataFrame back to the availability dictionary format."""
@@ -100,6 +106,8 @@ if main_shift_file:
         current_employee_names,
         None  # We'll handle the add below, not automated
     )
+
+    st.session_state.imported_col_order = names_detected
 
     st.sidebar.write("Detected Employees from Sheet:")
     st.sidebar.write(", ".join(names_detected))
