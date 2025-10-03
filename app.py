@@ -288,18 +288,19 @@ else:
 availability_df = availability_to_dataframe()
 
 if not availability_df.empty:
-    # ONLY show columns present in imported_col_order (from Excel)
-    display_columns = [emp for emp in st.session_state.imported_col_order if emp in availability_df.columns]
+    # Defensive: use imported_col_order if set, else employee order
+    col_order = st.session_state.get("imported_col_order")
+    if col_order is None:
+        col_order = [emp.name for emp in st.session_state.employees]
+    display_columns = [emp for emp in col_order if emp in availability_df.columns]
     display_df = availability_df[display_columns]
     st.info("You can directly edit the cells below. Changes are saved when you click 'Save All Changes'.")
     edited_df = st.data_editor(display_df, height=600)
 
     # If the dataframe has been edited, update the session state
-    # Update the full, correctly-ordered DataFrame
     full_edited_df = availability_df.copy()
     full_edited_df.update(edited_df)
     dataframe_to_availability(full_edited_df)
-
 else:
     st.warning("No availability data found. Initialize or import data.")
 
