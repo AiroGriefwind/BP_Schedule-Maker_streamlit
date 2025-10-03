@@ -117,6 +117,9 @@ if main_shift_file:
                 imported_col_order.append(str_name)
     st.session_state.imported_col_order = imported_col_order
     
+    sheet_dates = [str(x).strip() for x in df.iloc[1:, 0] if pd.notna(x) and str(x).strip()]
+    st.session_state.imported_sheet_dates = sheet_dates
+
     # Identify employees present in the system but NOT in the imported sheet
     extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
     st.session_state.extra_employees = extra_employees
@@ -293,7 +296,12 @@ if not availability_df.empty:
     if col_order is None:
         col_order = [emp.name for emp in st.session_state.employees]
     display_columns = [emp for emp in col_order if emp in availability_df.columns]
-    display_df = availability_df[display_columns]
+    display_df = availability_df[display_columns].copy()
+    
+    sheet_dates = st.session_state.get("imported_sheet_dates")
+    if sheet_dates is not None and len(sheet_dates) == len(display_df):
+        display_df.insert(0, "Date", sheet_dates)
+
     st.info("You can directly edit the cells below. Changes are saved when you click 'Save All Changes'.")
     edited_df = st.data_editor(display_df, height=600)
 
