@@ -78,6 +78,7 @@ def availability_to_dataframe():
     return df.applymap(lambda x: ', '.join(map(str, x)) if isinstance(x, list) else x)
 
 
+
 def dataframe_to_availability(edited_df):
     """Converts the edited DataFrame back to the availability dictionary format."""
     # Convert comma-separated strings back to lists
@@ -108,6 +109,10 @@ if main_shift_file:
     )
 
     st.session_state.imported_col_order = names_detected
+    
+    # Identify employees present in the system but NOT in the imported sheet
+    extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
+    st.session_state.extra_employees = extra_employees
 
     st.sidebar.write("Detected Employees from Sheet:")
     st.sidebar.write(", ".join(names_detected))
