@@ -128,35 +128,45 @@ def import_full_schedule_from_main_excel(excelfile):
     - excelfile: uploaded file obj (Streamlit) or file path.
     Returns: availability (dict of dicts).
     """
-    df = pd.read_excel(excelfile)  # assumes first row is header: "Date", emp1, emp2...
-    # Normalize column names
+    df = pd.read_excel(excelfile)
     df.columns = [str(col).strip() for col in df.columns]
-    date_col = df.columns[0]  # usually "Date"
+    date_col = df.columns[0]
     employee_names = df.columns[1:]
     availability = {}
     for idx, row in df.iterrows():
-        # Accept both datetime and string as date
+        # Convert date to string
         date_val = row[date_col]
-        # If Excel date/datetime, format to ISO string
         if isinstance(date_val, datetime):
             date_str = date_val.strftime("%Y-%m-%d")
         else:
             try:
-                # Try to parse string
+                # Try to parse string or Excel float-date
                 date_str = pd.to_datetime(str(date_val)).strftime("%Y-%m-%d")
             except Exception:
-                continue  # skip invalid/bad date row
+                continue  # skip bad date
         availability[date_str] = {}
         for emp in employee_names:
             shift = row.get(emp, "")
-            # Optional: clean up cell (convert nan/None to "", strip string)
+            # JSON-safe: convert all to string, not nan, not Timestamp
             if pd.isna(shift):
                 shift = ""
-            if isinstance(shift, str):
-                shift = shift.strip()
+            # If shift is a Timestamp, datetime, or number, convert to string
+            if isinstance(shift, (datetime, pd.Timestamp)):
+                shift = shift.strftime("%H:%M")  # or just str(shift)
+            else:
+                shift = str(shift).strip()
             availability[date_str][emp] = shift
-    # Save or return
-    save_data(availability)  # this should update your back-end
+    # Now, recursively convert all datetimes to strings in case anything remains
+    import json
+    def _to_json_safe(obj):
+        if isinstance(obj, dict):
+            return {str(k): _to_json_safe(v) for k, v in obj.items()}
+        elif isinstance(obj, (datetime, pd.Timestamp)):
+            return obj.strftime("%Y-%m-%d")
+        else:
+            return obj
+    availability = _to_json_safe(availability)
+    save_data(availability)
     return availability
 
 
