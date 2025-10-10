@@ -306,12 +306,20 @@ if not availability_df.empty:
     
     sheet_dates = st.session_state.get("imported_sheet_dates")
     
-    # Debug prints
-    st.write(f"Debug: sheet_dates = {sheet_dates}")
-    st.write(f"Debug: display_df = {display_df}")
-
-    if sheet_dates is not None and len(sheet_dates) == len(display_df):
-        display_df.insert(0, "Date", sheet_dates)
+    if sheet_dates is None:
+        st.warning("No imported sheet dates found.")
+    else:
+        # Slice or filter availability_df so it has the same number of rows as sheet_dates
+        # This assumes your df index aligns with the correct row order and represents dates
+        display_df = availability_df.copy()
+        # If df is too long, cut it; if too short, pad with empty rows (optional)
+        if len(display_df) > len(sheet_dates):
+            display_df = display_df.iloc[:len(sheet_dates)]
+        elif len(display_df) < len(sheet_dates):
+            # Optionally pad missing rows with blank lines
+            for _ in range(len(sheet_dates) - len(display_df)):
+                display_df = display_df.append(pd.Series(dtype="object"), ignore_index=True)
+        display_df.insert(0, "Date", sheet_dates)  # Always the right length
 
     st.info("You can directly edit the cells below. Changes are saved when you click 'Save All Changes'.")
     edited_df = st.data_editor(display_df, height=600)
