@@ -309,25 +309,24 @@ if not availability_df.empty:
     if sheet_dates is None:
         st.warning("No imported sheet dates found.")
     else:
-        # Slice or filter availability_df so it has the same number of rows as sheet_dates
-        # This assumes your df index aligns with the correct row order and represents dates
+        # Always make displayed df match number of imported dates
         display_df = availability_df.copy()
-        # If df is too long, cut it; if too short, pad with empty rows (optional)
         if len(display_df) > len(sheet_dates):
             display_df = display_df.iloc[:len(sheet_dates)]
         elif len(display_df) < len(sheet_dates):
-            # Optionally pad missing rows with blank lines
-            for _ in range(len(sheet_dates) - len(display_df)):
-                display_df = display_df.append(pd.Series(dtype="object"), ignore_index=True)
-        display_df.insert(0, "Date", sheet_dates)  # Always the right length
+            num_missing = len(sheet_dates) - len(display_df)
+            blank = pd.DataFrame([[""] * len(display_df.columns)] * num_missing, columns=display_df.columns)
+            display_df = pd.concat([display_df, blank], ignore_index=True)
+        display_df.insert(0, "Date", sheet_dates)  # Insert date column
 
-    st.info("You can directly edit the cells below. Changes are saved when you click 'Save All Changes'.")
-    edited_df = st.data_editor(display_df, height=600)
+        st.info("You can directly edit the cells below. Changes are saved when you click 'Save All Changes'.")
+        edited_df = st.data_editor(display_df, height=600)
 
-    # If the dataframe has been edited, update the session state
-    full_edited_df = availability_df.copy()
-    full_edited_df.update(edited_df)
-    dataframe_to_availability(full_edited_df)
+        # WARNING: Remove "Date" column before updating raw data!
+        full_edited_df = availability_df.copy()
+        edited_df_no_date = edited_df.drop(columns=["Date"])
+        full_edited_df.update(edited_df_no_date)
+        dataframe_to_availability(full_edited_df)
 else:
     st.warning("No availability data found. Initialize or import data.")
 
