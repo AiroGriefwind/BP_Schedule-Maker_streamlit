@@ -122,53 +122,37 @@ def load_data():
 EMPLOYEES = init_employees()
 FREELANCERS = [employee.name for employee in EMPLOYEES if isinstance(employee, Freelancer)]
 
-def import_full_schedule_from_main_excel(excelfile):
-    """
-    Import full schedule (date x employee) in classic grid from Excel file.
-    - excelfile: uploaded file obj (Streamlit) or file path.
-    Returns: availability (dict of dicts).
-    """
-    df = pd.read_excel(excelfile)
-    df.columns = [str(col).strip() for col in df.columns]
-    date_col = df.columns[0]
-    employee_names = df.columns[1:]
-    availability = {}
-    for idx, row in df.iterrows():
-        # Convert date to string
-        date_val = row[date_col]
-        if isinstance(date_val, datetime):
-            date_str = date_val.strftime("%Y-%m-%d")
-        else:
-            try:
-                # Try to parse string or Excel float-date
-                date_str = pd.to_datetime(str(date_val)).strftime("%Y-%m-%d")
-            except Exception:
-                continue  # skip bad date
-        availability[date_str] = {}
-        for emp in employee_names:
-            shift = row.get(emp, "")
-            # JSON-safe: convert all to string, not nan, not Timestamp
-            if pd.isna(shift):
-                shift = ""
-            # If shift is a Timestamp, datetime, or number, convert to string
-            if isinstance(shift, (datetime, pd.Timestamp)):
-                shift = shift.strftime("%H:%M")  # or just str(shift)
-            else:
-                shift = str(shift).strip()
-            availability[date_str][emp] = shift
-    # Now, recursively convert all datetimes to strings in case anything remains
-    import json
-    def _to_json_safe(obj):
-        if isinstance(obj, dict):
-            return {str(k): _to_json_safe(v) for k, v in obj.items()}
-        elif isinstance(obj, (datetime, pd.Timestamp)):
-            return obj.strftime("%Y-%m-%d")
-        else:
-            return obj
-    availability = _to_json_safe(availability)
-    save_data(availability)
-    return availability
-
+# New centralized role-based rules storage
+# ROLE_RULES = {
+#     "Freelancer": {
+#         "rule_type": "shift_based",
+#         "shifts": {
+#             "weekday": {"early": "7-16", "day": "0930-1830", "night": "15-24"},
+#             "weekend": {"early": "7-16", "day": "10-19", "night": "15-24"}
+#         },
+#         "requirements": {
+#             "weekday": {"early": 1, "day": 1, "night": 2},
+#             "weekend": {"early": 1, "day": 1, "night": 1}
+#         }
+#     },
+#     "SeniorEditor": {
+#         "rule_type": "fixed_time",
+#         "default_shift": "13-22",
+#     },
+#     # Other roles can be added here with their specific rules
+#     "economics": {
+#         "rule_type": "fixed_time",
+#         "default_shift": "10-19",
+#     },
+#     "Entertainment": {
+#         "rule_type": "fixed_time",
+#         "default_shift": "10-19",
+#     },
+#     "KoreanEntertainment": {
+#         "rule_type": "fixed_time",
+#         "default_shift": "10-19",
+#     }
+# }
 
 def load_employees():
     data = fm.get_data('employees')
