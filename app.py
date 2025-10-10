@@ -100,6 +100,16 @@ st.sidebar.header("Main Shift Employee Import")
 main_shift_file = st.sidebar.file_uploader("Upload Main Shift Excel", type=["xlsx"])
 
 if main_shift_file:
+
+    with st.spinner("Importing full schedule..."):
+        from scheduling_logic import import_full_schedule_from_main_excel
+        availability = import_full_schedule_from_main_excel(main_shift_file) # patches global/data
+        st.session_state.availability = availability
+        st.toast("Full shift schedule imported!")
+        st.session_state.initialized = False
+        st.rerun()
+
+
     # Pull current employee names for live comparison
     current_employee_names = [e.name for e in st.session_state.employees]
     names_detected, names_missing = import_employees_from_main_excel(

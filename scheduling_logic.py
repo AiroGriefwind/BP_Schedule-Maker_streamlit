@@ -122,37 +122,44 @@ def load_data():
 EMPLOYEES = init_employees()
 FREELANCERS = [employee.name for employee in EMPLOYEES if isinstance(employee, Freelancer)]
 
-# New centralized role-based rules storage
-# ROLE_RULES = {
-#     "Freelancer": {
-#         "rule_type": "shift_based",
-#         "shifts": {
-#             "weekday": {"early": "7-16", "day": "0930-1830", "night": "15-24"},
-#             "weekend": {"early": "7-16", "day": "10-19", "night": "15-24"}
-#         },
-#         "requirements": {
-#             "weekday": {"early": 1, "day": 1, "night": 2},
-#             "weekend": {"early": 1, "day": 1, "night": 1}
-#         }
-#     },
-#     "SeniorEditor": {
-#         "rule_type": "fixed_time",
-#         "default_shift": "13-22",
-#     },
-#     # Other roles can be added here with their specific rules
-#     "economics": {
-#         "rule_type": "fixed_time",
-#         "default_shift": "10-19",
-#     },
-#     "Entertainment": {
-#         "rule_type": "fixed_time",
-#         "default_shift": "10-19",
-#     },
-#     "KoreanEntertainment": {
-#         "rule_type": "fixed_time",
-#         "default_shift": "10-19",
-#     }
-# }
+def import_full_schedule_from_main_excel(excelfile):
+    """
+    Imports full schedule data from the main shift sheet Excel (date-employee grid).
+    Sheet format: first col = date, then one column per employee, cell values = shift/leave.
+    Updates the availability dict: {date: {employee: shift_code}}
+    """
+    import pandas as pd
+    df = pd.read_excel(excelfile, header=0)   # first row: employee names, first col: Date
+    
+    # Dates column assumed named 'Date' (or first column), rest are employee names
+    date_col = df.columns[0]
+    employees = df.columns[1:]
+    availability = {}     # build new dict
+
+    for idx, row in df.iterrows():
+        raw_date = row[date_col]
+        if isinstance(raw_date, pd.Timestamp):
+            date_str = raw_date.strftime("%Y-%m-%d")   # ISO format for consistency
+        else:
+            # Try parsing as string date
+            try:
+                date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
+            except Exception:
+                date_str = str(raw_date)
+        
+        availability[date_str] = {}
+        for emp in employees:
+            val = row[emp]
+            # Keep as string, handle NaNs as off/not available
+            if pd.notna(val) and str(val).strip() != "":
+                availability[date_str][str(emp).strip()] = str(val).strip()
+            else:
+                availability[date_str][str(emp).strip()] = "off"
+    
+    # Save to persistence and update global/session as needed
+    save_data(availability)
+    return availability
+
 
 def load_employees():
     data = fm.get_data('employees')
