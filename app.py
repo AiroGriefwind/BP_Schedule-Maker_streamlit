@@ -317,7 +317,12 @@ if not availability_df.empty:
             num_missing = len(sheet_dates) - len(display_df)
             blank = pd.DataFrame([[""] * len(display_df.columns)] * num_missing, columns=display_df.columns)
             display_df = pd.concat([display_df, blank], ignore_index=True)
-        display_df.insert(0, "Date", sheet_dates)  # Insert date column
+        # Format sheet_dates to dd/mm/yyyy
+        formatted_dates = [
+            pd.to_datetime(date).strftime("%d/%m/%Y") for date in sheet_dates
+        ]
+
+        display_df.insert(0, "Date", formatted_dates)
 
         st.info("You can directly edit the cells below. Changes are saved when you click 'Save All Changes'.")
         edited_df = st.data_editor(display_df, height=600)
