@@ -307,8 +307,8 @@ if not availability_df.empty:
     sheet_dates = st.session_state.get("imported_sheet_dates")
     
     # Debug prints
-    print("sheetdates:", sheet_dates)
-    print("displaydf shape:", display_df.shape)
+    st.write(f"Debug: sheet_dates = {sheet_dates}")
+    st.write(f"Debug: display_df = {display_df}")
 
     if sheet_dates is not None and len(sheet_dates) == len(display_df):
         display_df.insert(0, "Date", sheet_dates)
