@@ -11,6 +11,7 @@ from scheduling_logic import (
     generate_schedule,
     import_from_google_form,
     import_employees_from_main_excel,
+    import_full_schedule_from_main_excel,
     add_employee,
     edit_employee,
     delete_employee,
@@ -102,7 +103,6 @@ main_shift_file = st.sidebar.file_uploader("Upload Main Shift Excel", type=["xls
 if main_shift_file:
 
     with st.spinner("Importing full schedule..."):
-        from scheduling_logic import import_full_schedule_from_main_excel
         availability = import_full_schedule_from_main_excel(main_shift_file) # patches global/data
         st.session_state.availability = availability
         st.toast("Full shift schedule imported!")
@@ -142,16 +142,22 @@ if main_shift_file:
 
     if "extra_employees" in st.session_state and st.session_state.extra_employees:
         st.sidebar.subheader("Employees not in imported sheet")
+        to_remove = []
         for extra_name in st.session_state.extra_employees:
             with st.sidebar.form(key=f"remove_{extra_name}_form"):
                 st.write(f"Employee '{extra_name}' found in system but NOT in imported main sheet.")
                 remove = st.form_submit_button(f"Remove '{extra_name}'")
                 if remove:
                     delete_employee(extra_name)
-                    st.session_state.extra_employees.remove(extra_name)
+                    to_remove.append(extra_name)
                     st.toast(f"🗑️ Employee '{extra_name}' removed from system (not in latest main sheet import).")
                     st.session_state.initialized = False
-                    st.rerun()
+        # Remove all after the loop, so rerun not called in-loop
+        for name in to_remove:
+            st.session_state.extra_employees.remove(name)
+        if to_remove:
+            st.rerun()
+
 
 
     st.sidebar.write("Detected Employees from Sheet:")

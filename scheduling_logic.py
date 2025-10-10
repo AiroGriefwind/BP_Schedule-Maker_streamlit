@@ -124,40 +124,39 @@ FREELANCERS = [employee.name for employee in EMPLOYEES if isinstance(employee, F
 
 def import_full_schedule_from_main_excel(excelfile):
     """
-    Imports full schedule data from the main shift sheet Excel (date-employee grid).
-    Sheet format: first col = date, then one column per employee, cell values = shift/leave.
-    Updates the availability dict: {date: {employee: shift_code}}
+    Import full schedule (date x employee) in classic grid from Excel file.
+    - excelfile: uploaded file obj (Streamlit) or file path.
+    Returns: availability (dict of dicts).
     """
-    import pandas as pd
-    df = pd.read_excel(excelfile, header=0)   # first row: employee names, first col: Date
-    
-    # Dates column assumed named 'Date' (or first column), rest are employee names
-    date_col = df.columns[0]
-    employees = df.columns[1:]
-    availability = {}     # build new dict
-
+    df = pd.read_excel(excelfile)  # assumes first row is header: "Date", emp1, emp2...
+    # Normalize column names
+    df.columns = [str(col).strip() for col in df.columns]
+    date_col = df.columns[0]  # usually "Date"
+    employee_names = df.columns[1:]
+    availability = {}
     for idx, row in df.iterrows():
-        raw_date = row[date_col]
-        if isinstance(raw_date, pd.Timestamp):
-            date_str = raw_date.strftime("%Y-%m-%d")   # ISO format for consistency
+        # Accept both datetime and string as date
+        date_val = row[date_col]
+        # If Excel date/datetime, format to ISO string
+        if isinstance(date_val, datetime):
+            date_str = date_val.strftime("%Y-%m-%d")
         else:
-            # Try parsing as string date
             try:
-                date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
+                # Try to parse string
+                date_str = pd.to_datetime(str(date_val)).strftime("%Y-%m-%d")
             except Exception:
-                date_str = str(raw_date)
-        
+                continue  # skip invalid/bad date row
         availability[date_str] = {}
-        for emp in employees:
-            val = row[emp]
-            # Keep as string, handle NaNs as off/not available
-            if pd.notna(val) and str(val).strip() != "":
-                availability[date_str][str(emp).strip()] = str(val).strip()
-            else:
-                availability[date_str][str(emp).strip()] = "off"
-    
-    # Save to persistence and update global/session as needed
-    save_data(availability)
+        for emp in employee_names:
+            shift = row.get(emp, "")
+            # Optional: clean up cell (convert nan/None to "", strip string)
+            if pd.isna(shift):
+                shift = ""
+            if isinstance(shift, str):
+                shift = shift.strip()
+            availability[date_str][emp] = shift
+    # Save or return
+    save_data(availability)  # this should update your back-end
     return availability
 
 
