@@ -30,6 +30,7 @@ st.set_page_config(page_title="BP Schedule Maker", layout="wide")
 st.title("Auto-Schedule Maker")
 
 
+
 # NEW: Add a button for one-time data upload (optional but useful)
 if st.button("Upload Initial Data to Firebase"):
     fm.upload_initial_data()
@@ -55,6 +56,50 @@ def initialize_session_state():
         st.session_state.generated_schedule = None
 
 # --- Helper Functions ---
+
+# Converts availability dict (with nested value/color) to a simple df for display
+def flatten_availability_for_display(availability):
+    records = []
+    for date, emps in availability.items():
+        row = {'Date': date}
+        for emp, cell in emps.items():
+            val = cell['value']
+            row[emp] = val
+        records.append(row)
+    return pd.DataFrame(records)
+
+# If you want to visualize color in Streamlit, apply background formatting
+def get_cell_styles(availability):
+    import pandas as pd
+    # Returns a DataFrame of styles (you could use .style.apply in display, but Streamlit might need custom rendering)
+    styles = []
+    for date, emps in availability.items():
+        row = {}
+        for emp, cell in emps.items():
+            color = cell.get('color')
+            row[emp] = f'background-color: #{color[2:]}' if color else ''
+        styles.append(row)
+    return pd.DataFrame(styles)
+
+
+def merge_edited_df_with_color(edited_df, orig_availability):
+    """
+    Given a DataFrame of "Date", Emp1, Emp2... (all cells are pure values, no color shown),
+    and the original nested-availability dict with color+value,
+    return a new nested dict with new values but colors preserved/retained.
+    """
+    result = {}
+    edited_df_nodate = edited_df.set_index("Date")
+    for date, row in edited_df_nodate.iterrows():
+        result[date] = {}
+        for emp in row.index:
+            new_val = row[emp]
+            orig_cell = orig_availability.get(date, {}).get(emp, {})
+            cell_color = orig_cell.get("color")
+            result[date][emp] = {"value": new_val, "color": cell_color}
+    return result
+
+
 def availability_to_dataframe():
     """Converts the availability dictionary to a Pandas DataFrame for editing."""
     availability_dict = st.session_state.availability
@@ -90,7 +135,7 @@ def dataframe_to_availability(edited_df):
 
 # --- Initialization ---
 initialize_session_state()
-
+availability_df = availability_to_dataframe()
 
 # --- Sidebar UI ---
 st.sidebar.title("🗓️ Schedule Maker")
@@ -176,9 +221,20 @@ if st.sidebar.button("Generate Schedule"):
 
 if st.sidebar.button("Save All Changes", type="primary"):
     with st.spinner("Saving data..."):
+        # Get edited DataFrame from your DataEditor variable (replace displaydf/editeddf as needed)
+        # For example, edited_df = st.session_state['edited_availability_df'] if you've stored it there
+        # If you use a local variable, just reference it directly
+
+        # Step 1: Merge new text values with old color info
+        # Replace 'edited_df' with whatever you use for the currently edited table
+        merged_availability = merge_edited_df_with_color(availability_df, st.session_state.availability)
+
+        # Step 2: Save to session state and file
+        st.session_state.availability = merged_availability
         save_data(st.session_state.availability)
         save_employees()
         st.toast("💾 All changes saved to server files!")
+
 
 if st.sidebar.button("Clear All Availability"):
     st.session_state.availability = clear_availability(st.session_state.start_date, st.session_state.employees)

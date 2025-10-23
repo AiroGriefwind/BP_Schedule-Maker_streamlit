@@ -1,3 +1,4 @@
+import openpyxl  # For color import
 import json
 import io
 import pandas as pd
@@ -173,23 +174,67 @@ def load_employees():
 
 def import_employees_from_main_excel(excel_file, current_employees, addemployee_callback):
     """
-    Read first row employee names from the main shift sheet Excel,
-    compare with current employees, and prompt to add if missing.
-    :param excel_file: Uploaded file obj or file path (xlsx)
+    Imports employee availability with color codes from an Excel file.
+    - Reads employee names from first row (ignores first column if it's date).
+    - Reads dates from first column (ignores first row).
+    - Reads cell values and cell colors.
+    - Returns: detected names, missing names, and per-date availability dict including color info.
+    :param excel_file: Uploaded file obj or file path (.xlsx)
     :param current_employees: list of employee names (str)
-    :param addemployee_callback: function to add employees, expects (name, role, start, end)
-    :return: names_detected, names_missing
+    :param addemployee_callback: function for UI/input (streamlit), expects (name, role, start, end)
+    :return: names_detected, names_missing, availability_dict
     """
-    # Accept either file path or uploaded file object (for Streamlit compatibility)
-    df = pd.read_excel(excel_file, header=None)
-    names_detected = [str(x).strip() for x in df.iloc[0] if pd.notna(x) and str(x).strip()]
+
+    # Use custom color-data extraction function placed in scheduling_logic.py
+    employee_names, dates, data, color_matrix = get_excel_data_with_colors(excel_file)
+    # Strip/clean names then check missing vs current
+    names_detected = [str(x).strip() for x in employee_names if x and str(x).strip()]
     names_missing = [name for name in names_detected if name not in current_employees]
-    added = []
-    # Callback lets UI handle missing employee input, so no input here
+
+    # [Patch] Call `addemployee_callback` for each missing name (UI can handle prompts/inputs)
     for name in names_missing:
-        # addemployee_callback expected to prompt UI/form in streamlit; info to be provided there
-        added.append(name)
-    return names_detected, names_missing
+        addemployee_callback(name)
+        # You may gather role/start/end via the callback, if needed
+
+    # Build availability dict for all dates/employees, with color info for each cell
+    availability_dict = {}
+    for date_idx, date in enumerate(dates):
+        date_str = str(date)
+        availability_dict[date_str] = {}
+        for emp_idx, emp in enumerate(employee_names):
+            cell_val = data[date_idx][emp_idx]
+            cell_color = color_matrix[date_idx][emp_idx]
+            availability_dict[date_str][emp] = {'value': cell_val, 'color': cell_color}
+
+    # Return detected names, missing names, and detailed availability
+    return names_detected, names_missing, availability_dict
+
+
+
+
+def get_excel_data_with_colors(file):
+    # Accept Streamlit-uploaded file or file path
+    wb = openpyxl.load_workbook(file)
+    ws = wb.active
+    
+    # Read headers (assumes first row contains employee names, first column is dates)
+    header_row = [cell.value for cell in ws[1]]
+    dates = [ws.cell(row=i, column=1).value for i in range(2, ws.max_row + 1)]
+    
+    data = []
+    colors = []
+
+    for i in range(2, ws.max_row + 1):
+        row_data = []
+        row_colors = []
+        for j in range(2, ws.max_column + 1):
+            cell_val = ws.cell(row=i, column=j).value
+            cell_color = ws.cell(row=i, column=j).fill.fgColor.rgb if ws.cell(row=i, column=j).fill.fgColor.type == 'rgb' else None
+            row_data.append(cell_val)
+            row_colors.append(cell_color)
+        data.append(row_data)
+        colors.append(row_colors)
+    return header_row[1:], dates, data, colors
 
 
 def sync_availability():
