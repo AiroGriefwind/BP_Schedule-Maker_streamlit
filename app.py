@@ -147,11 +147,13 @@ main_shift_file = st.sidebar.file_uploader("Upload Main Shift Excel", type=["xls
 if main_shift_file:
     # Pull current employee names for live comparison
     current_employee_names = [e.name for e in st.session_state.employees]
-    names_detected, names_missing = import_employees_from_main_excel(
+    names_detected, names_missing, imported_availability = import_employees_from_main_excel(
         main_shift_file,
         current_employee_names,
-        None  # We'll handle the add below, not automated
+        None
     )
+    st.session_state.availability = imported_availability
+
 
     df = pd.read_excel(main_shift_file, header=None)
     imported_col_order = []
