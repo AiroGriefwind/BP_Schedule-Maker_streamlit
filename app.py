@@ -122,6 +122,26 @@ def availability_to_dataframe():
     # Convert lists to comma-separated strings for st.data_editor
     return df.applymap(lambda x: ', '.join(map(str, x)) if isinstance(x, list) else x)
 
+def convert_availability_dates_to_str(availability):
+    """
+    Recursively convert all datetime keys in the availability dict to strings (YYYY-MM-DD).
+    Returns a new dict that is JSON serializable.
+    """
+    import datetime
+
+    def conv(obj):
+        if isinstance(obj, dict):
+            return {conv_key(k): conv(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [conv(v) for v in obj]
+        return obj
+
+    def conv_key(k):
+        if isinstance(k, datetime.date) or isinstance(k, datetime.datetime):
+            return k.strftime("%Y-%m-%d")
+        return str(k)
+    
+    return conv(availability)
 
 
 def dataframe_to_availability(edited_df):
@@ -284,7 +304,9 @@ st.sidebar.info("To permanently save changes, download the data files and commit
 employees_json = json.dumps([emp.__dict__ for emp in st.session_state.employees], indent=4)
 st.sidebar.download_button("Download employees.json", employees_json, "employees.json")
 
-availability_json = json.dumps(st.session_state.availability, indent=4)
+availability_serializable = convert_availability_dates_to_str(st.session_state.availability)
+availability_json = json.dumps(availability_serializable, indent=4)
+
 st.sidebar.download_button("Download availability.json", availability_json, "availability.json")
 
 
