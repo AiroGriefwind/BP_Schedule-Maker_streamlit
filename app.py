@@ -85,25 +85,51 @@ def _df_elementwise(df: pd.DataFrame, func):
         return df.map(func)  # pandas >= 2.1
     return df.applymap(func)  # pragma: no cover
 
-def _excel_rgb_to_css(rgb):
+def _excel_rgb_to_hex6(rgb):
     """
-    openpyxl fill.fgColor.rgb is often ARGB like 'FFD9D9D9'. Convert to CSS.
-    Returns '' when no color should be applied.
+    Convert openpyxl rgb/argb like 'FFD9D9D9' to 'D9D9D9' (hex6).
+    Returns '' if invalid/empty.
     """
     if rgb is None:
         return ""
     s = str(rgb).strip()
     if not s or s.lower() in {"none", "nan"}:
         return ""
-    # Treat "no fill" / default as empty
-    if s in {"00000000", "000000"}:
-        return ""
-    # ARGB -> RGB
-    if len(s) == 8:
+    if len(s) == 8:  # ARGB -> RGB
         s = s[2:]
     if len(s) != 6:
         return ""
-    return f"background-color: #{s};"
+    # Validate hex
+    try:
+        int(s, 16)
+    except Exception:
+        return ""
+    return s.upper()
+
+def _auto_text_hex_from_bg(bg_hex6):
+    """
+    Pick black/white text for readability based on background brightness.
+    bg_hex6: 'RRGGBB'
+    """
+    if not bg_hex6 or len(bg_hex6) != 6:
+        return ""
+    r = int(bg_hex6[0:2], 16)
+    g = int(bg_hex6[2:4], 16)
+    b = int(bg_hex6[4:6], 16)
+    # Perceived luminance (sRGB)
+    luminance = (0.299 * r) + (0.587 * g) + (0.114 * b)
+    return "FFFFFF" if luminance < 140 else "000000"
+
+def _excel_rgb_to_css(rgb):
+    """
+    openpyxl fill.fgColor.rgb is often ARGB like 'FFD9D9D9'. Convert to CSS.
+    Returns '' when no color should be applied.
+    """
+    hex6 = _excel_rgb_to_hex6(rgb)
+    # Treat "no fill" / default as empty (openpyxl sometimes gives 00000000)
+    if not hex6 or hex6 in {"000000"}:
+        return ""
+    return f"background-color: #{hex6};"
 
 def _availability_cell_value(cell):
     """Extract display/edit value from availability cell."""
@@ -117,9 +143,29 @@ def _availability_cell_value(cell):
     return str(v)
 
 def _availability_cell_css(cell):
-    """Extract CSS style string from availability cell color."""
+    """Extract CSS style string from availability cell (background + text color)."""
     if isinstance(cell, dict):
-        return _excel_rgb_to_css(cell.get("color"))
+        bg_hex6 = _excel_rgb_to_hex6(cell.get("color"))
+        font_hex6 = _excel_rgb_to_hex6(cell.get("font_color"))
+
+        styles = []
+
+        bg_css = _excel_rgb_to_css(cell.get("color"))
+        if bg_css:
+            styles.append(bg_css)
+
+        # Prefer explicit font color; if missing, auto based on bg.
+        chosen_font = font_hex6
+        if bg_hex6 and (not chosen_font):
+            chosen_font = _auto_text_hex_from_bg(bg_hex6)
+        # If explicit font equals bg (unreadable), fall back to auto.
+        if bg_hex6 and chosen_font and chosen_font == bg_hex6:
+            chosen_font = _auto_text_hex_from_bg(bg_hex6)
+
+        if chosen_font:
+            styles.append(f"color: #{chosen_font};")
+
+        return " ".join(styles)
     return ""
 
 # Converts availability dict (with nested value/color) to a simple df for display
@@ -161,7 +207,8 @@ def merge_edited_df_with_color(edited_df, orig_availability):
             new_val = row[emp]
             orig_cell = orig_availability.get(date, {}).get(emp, {})
             cell_color = orig_cell.get("color")
-            result[date][emp] = {"value": new_val, "color": cell_color}
+            cell_font = orig_cell.get("font_color")
+            result[date][emp] = {"value": new_val, "color": cell_color, "font_color": cell_font}
     return result
 
 
@@ -288,7 +335,8 @@ def dataframe_to_availability(edited_df):
 
             orig_cell = orig.get(d, {}).get(emp)
             color = orig_cell.get("color") if isinstance(orig_cell, dict) else None
-            new_avail[d][emp] = {"value": new_val, "color": color}
+            font_color = orig_cell.get("font_color") if isinstance(orig_cell, dict) else None
+            new_avail[d][emp] = {"value": new_val, "color": color, "font_color": font_color}
 
     st.session_state.availability = new_avail
 

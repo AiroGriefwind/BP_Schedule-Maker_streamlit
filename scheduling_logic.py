@@ -357,7 +357,7 @@ def import_employees_from_main_excel(excel_file, current_employees, addemployee_
     """
 
     # Use custom color-data extraction function placed in scheduling_logic.py
-    employee_names, dates, data, color_matrix = get_excel_data_with_colors(excel_file)
+    employee_names, dates, data, fill_color_matrix, font_color_matrix = get_excel_data_with_colors(excel_file)
     # Strip/clean names then check missing vs current
     names_detected = [str(x).strip() for x in employee_names if x and str(x).strip()]
     names_missing = [name for name in names_detected if name not in current_employees]
@@ -378,8 +378,9 @@ def import_employees_from_main_excel(excel_file, current_employees, addemployee_
         availability_dict[date_str] = {}
         for emp_idx, emp in enumerate(employee_names):
             cell_val = data[date_idx][emp_idx]
-            cell_color = color_matrix[date_idx][emp_idx]
-            availability_dict[date_str][emp] = {'value': cell_val, 'color': cell_color}
+            cell_fill = fill_color_matrix[date_idx][emp_idx]
+            cell_font = font_color_matrix[date_idx][emp_idx]
+            availability_dict[date_str][emp] = {"value": cell_val, "color": cell_fill, "font_color": cell_font}
 
     # Return detected names, missing names, and detailed availability
     return names_detected, names_missing, availability_dict
@@ -397,19 +398,36 @@ def get_excel_data_with_colors(file):
     dates = [ws.cell(row=i, column=1).value for i in range(2, ws.max_row + 1)]
     
     data = []
-    colors = []
+    fills = []
+    fonts = []
 
     for i in range(2, ws.max_row + 1):
         row_data = []
-        row_colors = []
+        row_fills = []
+        row_fonts = []
         for j in range(2, ws.max_column + 1):
-            cell_val = ws.cell(row=i, column=j).value
-            cell_color = ws.cell(row=i, column=j).fill.fgColor.rgb if ws.cell(row=i, column=j).fill.fgColor.type == 'rgb' else None
+            c = ws.cell(row=i, column=j)
+            cell_val = c.value
+
+            # Fill color (background)
+            try:
+                cell_fill = c.fill.fgColor.rgb if c.fill and c.fill.fgColor and c.fill.fgColor.type == "rgb" else None
+            except Exception:
+                cell_fill = None
+
+            # Font color (text)
+            try:
+                cell_font = c.font.color.rgb if c.font and c.font.color and c.font.color.type == "rgb" else None
+            except Exception:
+                cell_font = None
+
             row_data.append(cell_val)
-            row_colors.append(cell_color)
+            row_fills.append(cell_fill)
+            row_fonts.append(cell_font)
         data.append(row_data)
-        colors.append(row_colors)
-    return header_row[1:], dates, data, colors
+        fills.append(row_fills)
+        fonts.append(row_fonts)
+    return header_row[1:], dates, data, fills, fonts
 
 
 def sync_availability():
