@@ -593,6 +593,31 @@ with st.expander("自定义更表规则（小组）"):
             save_group_rules(st.session_state.group_rules)
             st.toast("小组规则已保存到 Firebase。")
 
+    # Diagnostics (helps when different deployments / Firebase envs appear inconsistent)
+    with st.expander("诊断：Firebase 读取到的小组规则（只读）", expanded=False):
+        try:
+            proj = None
+            try:
+                proj = st.secrets.get("firebase", {}).get("service_account", {}).get("project_id")
+            except Exception:
+                proj = None
+            if proj:
+                st.caption(f"Firebase project_id: {proj}")
+
+            raw = fm.get_data("group_rules")
+            if raw is None:
+                st.warning("fm.get_data('group_rules') 返回 None（Firebase 中该路径可能为空/无权限/连接异常）。")
+            else:
+                st.caption(f"fm.get_data('group_rules') 类型：{type(raw).__name__}")
+                if isinstance(raw, dict):
+                    st.caption(f"keys: {list(raw.keys())}")
+                    st.caption(f"updated_at: {raw.get('updated_at')}")
+                    gs = raw.get("groups") or []
+                    st.caption(f"groups 数量: {len(gs) if isinstance(gs, list) else 'N/A'}")
+                st.json(raw)
+        except Exception as e:
+            st.error(f"诊断读取失败：{e}")
+
     group_rules = st.session_state.get("group_rules") or GROUP_RULES
     groups = group_rules.get("groups", [])
 
