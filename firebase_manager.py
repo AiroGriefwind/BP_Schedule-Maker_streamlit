@@ -15,11 +15,15 @@ _LOGGER = None  # kept for backward compatibility, but we now prefer session_sta
 
 import streamlit as st
 
+_DEFAULT_BUCKET_NAME = None
+
 def initialize_firebase():
     # This supports TOML secrets with private_key as a one-line string with \n's
     if 'firebase' in st.secrets:
         svcdict = dict(st.secrets['firebase']['service_account'])
         bucket = st.secrets['firebase'].get('storage_bucket', f"{svcdict['project_id']}.appspot.com")
+        global _DEFAULT_BUCKET_NAME
+        _DEFAULT_BUCKET_NAME = bucket
         dburl = st.secrets['firebase']['database_url']
         # Convert \n to real newlines if required
         if "\\n" in svcdict["private_key"]:
@@ -204,11 +208,46 @@ def save_json_to_storage(remote_path, data, content_type="application/json"):
     Example remote_path: "config/group_rules.json"
     """
     # Requires initialize_firebase() to have been called with storageBucket configured.
-    bucket = storage.bucket()
+    bucket_name = _DEFAULT_BUCKET_NAME
+    if not bucket_name:
+        try:
+            bucket_name = st.secrets.get("firebase", {}).get("storage_bucket")
+        except Exception:
+            bucket_name = None
+    bucket = storage.bucket(bucket_name) if bucket_name else storage.bucket()
     blob = bucket.blob(remote_path)
     payload = json.dumps(data, ensure_ascii=False, indent=2)
     blob.upload_from_string(payload, content_type=content_type)
     return f"gs://{bucket.name}/{remote_path}"
+
+
+def _candidate_bucket_names():
+    """
+    Return candidate bucket names for Firebase Storage.
+    Newer Firebase projects may use <project>.firebasestorage.app; older often use <project>.appspot.com.
+    """
+    names = []
+    if _DEFAULT_BUCKET_NAME:
+        names.append(_DEFAULT_BUCKET_NAME)
+    try:
+        fb = st.secrets.get("firebase", {})
+        b = fb.get("storage_bucket")
+        if b:
+            names.append(b)
+        pid = (fb.get("service_account", {}) or {}).get("project_id")
+        if pid:
+            names.append(f"{pid}.appspot.com")
+            names.append(f"{pid}.firebasestorage.app")
+    except Exception:
+        pass
+    # de-dup preserve order
+    seen = set()
+    out = []
+    for n in names:
+        if n and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
 
 
 def get_json_from_storage(remote_path):
@@ -217,19 +256,21 @@ def get_json_from_storage(remote_path):
     Returns None if not found or on error.
     Example remote_path: "config/group_rules.json"
     """
-    try:
-        bucket = storage.bucket()
-        blob = bucket.blob(remote_path)
+    for bucket_name in _candidate_bucket_names() or [None]:
         try:
-            if not blob.exists():
-                return None
+            bucket = storage.bucket(bucket_name) if bucket_name else storage.bucket()
+            blob = bucket.blob(remote_path)
+            try:
+                if not blob.exists():
+                    continue
+            except Exception:
+                # Some environments may not support exists(); fall back to download and catch.
+                pass
+            text = blob.download_as_text()
+            return json.loads(text)
         except Exception:
-            # Some environments may not support exists(); fall back to download and catch.
-            pass
-        text = blob.download_as_text()
-        return json.loads(text)
-    except Exception:
-        return None
+            continue
+    return None
 
 
 def upload_initial_data(files=None):

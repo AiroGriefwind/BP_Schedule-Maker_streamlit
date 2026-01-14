@@ -615,6 +615,24 @@ with st.expander("自定义更表规则（小组）"):
                     gs = raw.get("groups") or []
                     st.caption(f"groups 数量: {len(gs) if isinstance(gs, list) else 'N/A'}")
                 st.json(raw)
+
+            # Storage backup check
+            try:
+                backup = None
+                if hasattr(fm, "get_json_from_storage"):
+                    backup = fm.get_json_from_storage("config/group_rules.json")
+                if backup is None:
+                    st.warning("Storage 备份读取结果：None（可能 bucket 名称不匹配或无权限）。")
+                else:
+                    st.success("Storage 备份读取成功：config/group_rules.json")
+                    if isinstance(backup, dict):
+                        st.caption(f"backup keys: {list(backup.keys())}")
+                        st.caption(f"backup updated_at: {backup.get('updated_at')}")
+                        bg = backup.get('groups') or []
+                        st.caption(f"backup groups 数量: {len(bg) if isinstance(bg, list) else 'N/A'}")
+                    st.json(backup)
+            except Exception as e:
+                st.error(f"Storage 备份读取异常：{e}")
         except Exception as e:
             st.error(f"诊断读取失败：{e}")
 
