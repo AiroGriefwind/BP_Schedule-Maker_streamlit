@@ -393,16 +393,9 @@ with st.expander("自定义更表规则（小组）"):
         When switching the selected group, we must clear the edit widget keys.
         Otherwise Streamlit will reuse previous widget state and the UI appears "not refreshed".
         """
-        for k in [
-            "edit_group_name",
-            "edit_group_desc",
-            "edit_group_active",
-            "edit_group_headcount",
-            "edit_group_members",
-            "edit_group_windows",
-            "confirm_delete_group",
-        ]:
-            if k in st.session_state:
+        # Clear any previously created per-group edit widgets
+        for k in list(st.session_state.keys()):
+            if k.startswith("edit_group_ui__") or k.startswith("confirm_delete_group_ui__"):
                 del st.session_state[k]
 
     # Refresh from Firebase
@@ -515,26 +508,37 @@ with st.expander("自定义更表规则（小组）"):
         g = name_to_group.get(selected_group_name)
 
         if g:
+            gid = str(g.get("id") or g.get("name") or "unknown")
+            key_prefix = f"edit_group_ui__{gid}__"
             edit_cols = st.columns([2, 2])
             with edit_cols[0]:
-                edited_name = st.text_input("小组名称", value=g.get("name", ""), key="edit_group_name")
-                edited_desc = st.text_input("备注/说明", value=g.get("description", ""), key="edit_group_desc")
-                edited_active = st.checkbox("启用", value=bool(g.get("active", True)), key="edit_group_active")
+                edited_name = st.text_input("小组名称", value=g.get("name", ""), key=f"{key_prefix}name")
+                edited_desc = st.text_input("备注/说明", value=g.get("description", ""), key=f"{key_prefix}desc")
+                edited_active = st.checkbox("启用", value=bool(g.get("active", True)), key=f"{key_prefix}active")
                 edited_headcount = st.number_input(
-                    "规划人数（可选）", min_value=0, value=int(g.get("headcount_planned") or 0), step=1, key="edit_group_headcount"
+                    "规划人数（可选）",
+                    min_value=0,
+                    value=int(g.get("headcount_planned") or 0),
+                    step=1,
+                    key=f"{key_prefix}headcount",
                 )
                 edited_members = st.multiselect(
                     "成员（从现有员工中选择）",
                     options=employee_names,
                     default=[m for m in (g.get("members") or []) if m in employee_names],
-                    key="edit_group_members",
+                    key=f"{key_prefix}members",
                 )
 
             with edit_cols[1]:
                 windows_df = pd.DataFrame(g.get("requirements_windows") or [])
                 if windows_df.empty:
                     windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
-                edited_windows_df = st.data_editor(windows_df, num_rows="dynamic", use_container_width=True, key="edit_group_windows")
+                edited_windows_df = st.data_editor(
+                    windows_df,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    key=f"{key_prefix}windows",
+                )
 
             action_cols = st.columns([1, 1, 2])
             with action_cols[0]:
@@ -569,16 +573,28 @@ with st.expander("自定义更表规则（小组）"):
                         st.session_state.group_rules = group_rules
                         save_group_rules(st.session_state.group_rules)
                         st.toast("✅ 已保存小组修改到 Firebase。")
+                        # If renamed, keep selection in sync
+                        st.session_state.selected_group_name = new_name_norm
                         st.session_state.initialized = False
                         st.rerun()
 
             with action_cols[1]:
-                confirm_delete = st.checkbox("确认删除", value=False, key="confirm_delete_group")
+                confirm_delete = st.checkbox(
+                    "确认删除",
+                    value=False,
+                    key=f"confirm_delete_group_ui__{gid}",
+                )
                 if st.button("删除该小组", type="secondary", disabled=not confirm_delete):
                     group_rules["groups"] = [x for x in group_rules.get("groups", []) if x.get("id") != g.get("id")]
                     st.session_state.group_rules = group_rules
                     save_group_rules(st.session_state.group_rules)
                     st.toast("🗑️ 小组已删除并保存到 Firebase。")
+                    # After delete, reset selection to the first group (if any)
+                    remaining = [x.get("name") for x in group_rules.get("groups", []) if x.get("name")]
+                    if remaining:
+                        st.session_state.selected_group_name = remaining[0]
+                    elif "selected_group_name" in st.session_state:
+                        del st.session_state["selected_group_name"]
                     st.session_state.initialized = False
                     st.rerun()
 
