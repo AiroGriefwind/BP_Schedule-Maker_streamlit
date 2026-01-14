@@ -364,8 +364,9 @@ def import_employees_from_main_excel(excel_file, current_employees, addemployee_
 
     # [Patch] Call `addemployee_callback` for each missing name (UI can handle prompts/inputs)
     for name in names_missing:
-        addemployee_callback(name)
-        # You may gather role/start/end via the callback, if needed
+        if callable(addemployee_callback):
+            addemployee_callback(name)
+            # You may gather role/start/end via the callback, if needed
 
     # Build availability dict for all dates/employees, with color info for each cell
     availability_dict = {}
