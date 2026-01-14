@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import json
 import uuid
+import streamlit.components.v1 as components
 from scheduling_logic import (
     load_employees,
     load_data,
@@ -771,10 +772,28 @@ if not availability_df.empty:
             preview_css_df = availability_color_css_df.copy()
             # Align shapes defensively
             preview_css_df = preview_css_df.reindex_like(preview_values_df)
+            preview_css_df = preview_css_df.fillna("")
 
             with st.expander("彩色预览（只读）", expanded=False):
-                styler = preview_values_df.style.apply(lambda _df: preview_css_df, axis=None)
-                st.dataframe(styler, height=420, width="stretch")
+                # Stats: how many cells actually have a color style
+                total_cells = int(preview_css_df.size)
+                colored_cells = int((preview_css_df.astype(str) != "").sum().sum()) if total_cells else 0
+                st.caption(f"检测到有颜色的格子：{colored_cells}/{total_cells}")
+
+                preview_rows = st.number_input("预览行数（避免太大导致卡顿）", min_value=10, max_value=200, value=60, step=10)
+                pv = preview_values_df.head(int(preview_rows))
+                pc = preview_css_df.head(int(preview_rows))
+                styler = pv.style.apply(lambda _df: pc, axis=None)
+
+                mode = st.radio(
+                    "渲染方式",
+                    options=["HTML（推荐，颜色更稳定）", "DataFrame（有时主题会吞掉颜色）"],
+                    horizontal=True,
+                )
+                if mode.startswith("HTML"):
+                    components.html(styler.to_html(), height=460, scrolling=True)
+                else:
+                    st.dataframe(styler, height=420, width="stretch")
         except Exception:
             # Preview should never break editing
             pass
