@@ -21,10 +21,22 @@ from scheduling_logic import (
     get_last_generated_schedule,
     EMPLOYEES,
     ROLE_RULES,
-    load_group_rules,
-    save_group_rules,
-    GROUP_RULES,
 )
+
+# --- Optional: group rules (backward compatible with older deployments) ---
+try:
+    from scheduling_logic import load_group_rules, save_group_rules, GROUP_RULES  # type: ignore
+    GROUP_RULES_ENABLED = True
+except Exception:
+    GROUP_RULES_ENABLED = False
+
+    def load_group_rules():  # type: ignore
+        return {"version": 1, "updated_at": None, "groups": []}
+
+    def save_group_rules(_group_rules=None, also_write_local=True):  # type: ignore
+        return None
+
+    GROUP_RULES = {"version": 1, "updated_at": None, "groups": []}
 
 import firebase_manager as fm
 fm.initialize_firebase()
@@ -372,6 +384,10 @@ with st.expander("Manage Employees"):
 
 # --- Custom Group Rules (Team Rules) ---
 with st.expander("自定义更表规则（小组）"):
+    if not GROUP_RULES_ENABLED:
+        st.warning("当前部署环境的 `scheduling_logic.py` 版本不包含小组规则功能（load_group_rules）。请确保已把最新代码部署/推送后再使用此功能。")
+        st.stop()
+
     # Refresh from Firebase
     cols = st.columns([1, 1, 2])
     with cols[0]:
