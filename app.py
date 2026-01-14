@@ -138,6 +138,18 @@ def _availability_cell_value(cell):
         v = cell.get("value")
     if v is None:
         return ""
+    # If upstream stored an Excel-auto-parsed date for a shift like "10-19", show as "M-D".
+    try:
+        if isinstance(v, pd.Timestamp):
+            if not pd.isna(v):
+                dt = v.to_pydatetime()
+                if dt.hour == 0 and dt.minute == 0 and dt.second == 0:
+                    return f"{dt.month}-{dt.day}"
+        if isinstance(v, datetime):
+            if v.hour == 0 and v.minute == 0 and v.second == 0:
+                return f"{v.month}-{v.day}"
+    except Exception:
+        pass
     if isinstance(v, list):
         return ", ".join(map(str, v))
     return str(v)

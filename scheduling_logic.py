@@ -409,6 +409,15 @@ def get_excel_data_with_colors(file):
             c = ws.cell(row=i, column=j)
             cell_val = c.value
 
+            # Excel may auto-convert strings like "10-19" into dates (Oct-19).
+            # For availability cells, treat date-like values (midnight) as "M-D" to preserve intent.
+            try:
+                if getattr(c, "is_date", False) and isinstance(cell_val, datetime):
+                    if cell_val.hour == 0 and cell_val.minute == 0 and cell_val.second == 0:
+                        cell_val = f"{cell_val.month}-{cell_val.day}"
+            except Exception:
+                pass
+
             # Fill color (background)
             try:
                 cell_fill = c.fill.fgColor.rgb if c.fill and c.fill.fgColor and c.fill.fgColor.type == "rgb" else None
