@@ -84,6 +84,43 @@ def _df_elementwise(df: pd.DataFrame, func):
         return df.map(func)  # pandas >= 2.1
     return df.applymap(func)  # pragma: no cover
 
+def _excel_rgb_to_css(rgb):
+    """
+    openpyxl fill.fgColor.rgb is often ARGB like 'FFD9D9D9'. Convert to CSS.
+    Returns '' when no color should be applied.
+    """
+    if rgb is None:
+        return ""
+    s = str(rgb).strip()
+    if not s or s.lower() in {"none", "nan"}:
+        return ""
+    # Treat "no fill" / default as empty
+    if s in {"00000000", "000000"}:
+        return ""
+    # ARGB -> RGB
+    if len(s) == 8:
+        s = s[2:]
+    if len(s) != 6:
+        return ""
+    return f"background-color: #{s};"
+
+def _availability_cell_value(cell):
+    """Extract display/edit value from availability cell."""
+    v = cell
+    if isinstance(cell, dict) and "value" in cell:
+        v = cell.get("value")
+    if v is None:
+        return ""
+    if isinstance(v, list):
+        return ", ".join(map(str, v))
+    return str(v)
+
+def _availability_cell_css(cell):
+    """Extract CSS style string from availability cell color."""
+    if isinstance(cell, dict):
+        return _excel_rgb_to_css(cell.get("color"))
+    return ""
+
 # Converts availability dict (with nested value/color) to a simple df for display
 def flatten_availability_for_display(availability):
     records = []
@@ -143,11 +180,28 @@ def availability_to_dataframe():
     # Ensure all imported columns are present in df, even if empty
     for emp in col_order:
         if emp not in df.columns:
-            df[emp] = [[] for _ in range(len(df))]
+            df[emp] = ["" for _ in range(len(df))]
     df = df[col_order]  # This sets the display order
 
-    # Convert lists to comma-separated strings for st.data_editor
-    return _df_elementwise(df, lambda x: ", ".join(map(str, x)) if isinstance(x, list) else x)
+    # Convert availability cells to editable display values (value-only)
+    return _df_elementwise(df, _availability_cell_value)
+
+def availability_to_color_css_dataframe():
+    """Build a DataFrame of CSS strings (background colors) aligned to availability_to_dataframe()."""
+    availability_dict = st.session_state.availability
+    if not availability_dict:
+        return pd.DataFrame()
+    df = pd.DataFrame(availability_dict).T
+    # Match the same column order logic
+    if "imported_col_order" in st.session_state:
+        col_order = [col for col in st.session_state.imported_col_order if col]
+    else:
+        col_order = [emp.name for emp in st.session_state.employees]
+    for emp in col_order:
+        if emp not in df.columns:
+            df[emp] = ["" for _ in range(len(df))]
+    df = df[col_order]
+    return _df_elementwise(df, _availability_cell_css)
 
 def convert_availability_dates_to_str(availability):
     """
@@ -215,19 +269,33 @@ def convert_availability_dates_to_str(availability):
 
 def dataframe_to_availability(edited_df):
     """Converts the edited DataFrame back to the availability dictionary format."""
-    # Convert comma-separated strings back to lists
-    df = _df_elementwise(
-        edited_df,
-        lambda x: [item.strip() for item in x.split(",")] if isinstance(x, str) and x else [],
-    )
-    
-    # Transpose back to original format {date: {employee: [shifts]}}
-    st.session_state.availability = df.T.to_dict()
+    # Keep original structure (value+color) if present; update value only.
+    orig = st.session_state.get("availability") or {}
+    new_avail = {}
+    for date_key, row in edited_df.iterrows():
+        d = str(date_key)
+        new_avail[d] = {}
+        for emp in edited_df.columns:
+            new_val = row[emp]
+            if isinstance(new_val, float) and pd.isna(new_val):
+                new_val = ""
+            if new_val is None:
+                new_val = ""
+            if not isinstance(new_val, str):
+                new_val = str(new_val)
+            new_val = new_val.strip()
+
+            orig_cell = orig.get(d, {}).get(emp)
+            color = orig_cell.get("color") if isinstance(orig_cell, dict) else None
+            new_avail[d][emp] = {"value": new_val, "color": color}
+
+    st.session_state.availability = new_avail
 
 
 # --- Initialization ---
 initialize_session_state()
 availability_df = availability_to_dataframe()
+availability_color_css_df = availability_to_color_css_dataframe()
 
 # --- Sidebar UI ---
 st.sidebar.title("🗓️ Schedule Maker")
@@ -696,6 +764,20 @@ if not availability_df.empty:
         ]
 
         display_df.insert(0, "Date", formatted_dates)
+
+        # --- Color preview (read-only) ---
+        try:
+            preview_values_df = display_df.drop(columns=["Date"]).copy()
+            preview_css_df = availability_color_css_df.copy()
+            # Align shapes defensively
+            preview_css_df = preview_css_df.reindex_like(preview_values_df)
+
+            with st.expander("彩色预览（只读）", expanded=False):
+                styler = preview_values_df.style.apply(lambda _df: preview_css_df, axis=None)
+                st.dataframe(styler, height=420, width="stretch")
+        except Exception:
+            # Preview should never break editing
+            pass
 
         st.info("You can directly edit the cells below. Changes are saved when you click 'Save All Changes'.")
         edited_df = st.data_editor(display_df, height=600)

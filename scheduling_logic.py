@@ -370,7 +370,11 @@ def import_employees_from_main_excel(excel_file, current_employees, addemployee_
     # Build availability dict for all dates/employees, with color info for each cell
     availability_dict = {}
     for date_idx, date in enumerate(dates):
-        date_str = str(date)
+        # Normalize date key to ISO (YYYY-MM-DD) for downstream scheduling/validation.
+        try:
+            date_str = pd.to_datetime(date).strftime("%Y-%m-%d")
+        except Exception:
+            date_str = str(date)
         availability_dict[date_str] = {}
         for emp_idx, emp in enumerate(employee_names):
             cell_val = data[date_idx][emp_idx]
