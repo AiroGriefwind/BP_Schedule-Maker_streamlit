@@ -117,6 +117,22 @@ def load_group_rules():
     """Load GROUP_RULES from Firebase if it exists, else fall back to local JSON file."""
     global GROUP_RULES
     data = fm.get_data("group_rules")
+    # If DB contains an incomplete/legacy payload (e.g. {"version":1} without "groups"),
+    # try to recover from Storage backup or local seed file.
+    db_incomplete = isinstance(data, dict) and ("groups" not in data or not isinstance(data.get("groups", []), list))
+    if db_incomplete:
+        recovered = None
+        # Prefer Firebase Storage backup written by save_group_rules()
+        try:
+            if hasattr(fm, "get_json_from_storage"):
+                recovered = fm.get_json_from_storage("config/group_rules.json")
+        except Exception:
+            recovered = None
+        if recovered:
+            data = recovered
+        else:
+            data = None
+
     if not data and os.path.exists(GROUP_RULES_FILE):
         try:
             with open(GROUP_RULES_FILE, "r", encoding="utf-8") as f:
@@ -125,6 +141,13 @@ def load_group_rules():
             data = None
 
     GROUP_RULES = _normalize_group_rules(data)
+
+    # Self-heal DB if it was incomplete and we successfully normalized a full schema.
+    if db_incomplete:
+        try:
+            fm.save_data("group_rules", GROUP_RULES)
+        except Exception:
+            pass
     return GROUP_RULES
 
 

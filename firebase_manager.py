@@ -211,6 +211,27 @@ def save_json_to_storage(remote_path, data, content_type="application/json"):
     return f"gs://{bucket.name}/{remote_path}"
 
 
+def get_json_from_storage(remote_path):
+    """
+    Load a JSON file from Firebase Storage and return parsed object.
+    Returns None if not found or on error.
+    Example remote_path: "config/group_rules.json"
+    """
+    try:
+        bucket = storage.bucket()
+        blob = bucket.blob(remote_path)
+        try:
+            if not blob.exists():
+                return None
+        except Exception:
+            # Some environments may not support exists(); fall back to download and catch.
+            pass
+        text = blob.download_as_text()
+        return json.loads(text)
+    except Exception:
+        return None
+
+
 def upload_initial_data(files=None):
     """
     Upload local JSON files into Firebase DB.
