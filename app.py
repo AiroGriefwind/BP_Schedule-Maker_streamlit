@@ -74,6 +74,16 @@ def initialize_session_state():
 
 # --- Helper Functions ---
 
+# --- Compatibility helpers ---
+def _df_elementwise(df: pd.DataFrame, func):
+    """
+    Pandas deprecated DataFrame.applymap in favor of DataFrame.map (elementwise).
+    Keep a small shim for compatibility across pandas versions.
+    """
+    if hasattr(df, "map"):
+        return df.map(func)  # pandas >= 2.1
+    return df.applymap(func)  # pragma: no cover
+
 # Converts availability dict (with nested value/color) to a simple df for display
 def flatten_availability_for_display(availability):
     records = []
@@ -137,24 +147,66 @@ def availability_to_dataframe():
     df = df[col_order]  # This sets the display order
 
     # Convert lists to comma-separated strings for st.data_editor
-    return df.applymap(lambda x: ', '.join(map(str, x)) if isinstance(x, list) else x)
+    return _df_elementwise(df, lambda x: ", ".join(map(str, x)) if isinstance(x, list) else x)
 
 def convert_availability_dates_to_str(availability):
     """
-    Recursively convert all datetime keys in the availability dict to strings (YYYY-MM-DD).
-    Returns a new dict that is JSON serializable.
+    Recursively convert all datetime-like keys/values in the availability dict to strings.
+    This prevents `TypeError: Object of type datetime is not JSON serializable` when exporting.
     """
-    import datetime
+    import datetime as dt
 
     def conv(obj):
         if isinstance(obj, dict):
             return {conv_key(k): conv(v) for k, v in obj.items()}
         if isinstance(obj, list):
             return [conv(v) for v in obj]
+        if isinstance(obj, tuple):
+            return [conv(v) for v in obj]
+        if isinstance(obj, set):
+            return [conv(v) for v in obj]
+
+        # pandas Timestamp / NaT
+        try:
+            if isinstance(obj, pd.Timestamp):
+                if pd.isna(obj):
+                    return None
+                return obj.to_pydatetime().isoformat()
+        except Exception:
+            pass
+
+        # python datetime/date/time
+        if isinstance(obj, dt.datetime):
+            return obj.isoformat()
+        if isinstance(obj, dt.date):
+            return obj.strftime("%Y-%m-%d")
+        if isinstance(obj, dt.time):
+            return obj.isoformat()
+
+        # numpy scalar support (optional)
+        try:
+            import numpy as np  # type: ignore
+            if isinstance(obj, (np.integer, np.floating, np.bool_)):
+                return obj.item()
+            if isinstance(obj, np.datetime64):
+                # Convert to ISO string
+                return str(obj)
+        except Exception:
+            pass
+
         return obj
 
     def conv_key(k):
-        if isinstance(k, datetime.date) or isinstance(k, datetime.datetime):
+        # Most keys represent a date row; normalize to YYYY-MM-DD.
+        try:
+            if isinstance(k, pd.Timestamp):
+                if pd.isna(k):
+                    return "NaT"
+                return k.to_pydatetime().strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+        if isinstance(k, dt.datetime) or isinstance(k, dt.date):
             return k.strftime("%Y-%m-%d")
         return str(k)
     
@@ -164,7 +216,10 @@ def convert_availability_dates_to_str(availability):
 def dataframe_to_availability(edited_df):
     """Converts the edited DataFrame back to the availability dictionary format."""
     # Convert comma-separated strings back to lists
-    df = edited_df.applymap(lambda x: [item.strip() for item in x.split(',')] if isinstance(x, str) and x else [])
+    df = _df_elementwise(
+        edited_df,
+        lambda x: [item.strip() for item in x.split(",")] if isinstance(x, str) and x else [],
+    )
     
     # Transpose back to original format {date: {employee: [shifts]}}
     st.session_state.availability = df.T.to_dict()
@@ -322,7 +377,7 @@ employees_json = json.dumps([emp.__dict__ for emp in st.session_state.employees]
 st.sidebar.download_button("Download employees.json", employees_json, "employees.json")
 
 availability_serializable = convert_availability_dates_to_str(st.session_state.availability)
-availability_json = json.dumps(availability_serializable, indent=4)
+availability_json = json.dumps(availability_serializable, ensure_ascii=False, indent=4)
 
 st.sidebar.download_button("Download availability.json", availability_json, "availability.json")
 
@@ -456,7 +511,7 @@ with st.expander("自定义更表规则（小组）"):
 
         st.markdown("规则段（可多段）：每一段表示在该时间窗内，每个小时至少需要多少名成员在岗。")
         default_windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
-        win_df = st.data_editor(default_windows_df, num_rows="dynamic", use_container_width=True, key="new_group_windows")
+        win_df = st.data_editor(default_windows_df, num_rows="dynamic", width="stretch", key="new_group_windows")
 
         submitted = st.form_submit_button("创建小组")
         if submitted:
@@ -536,7 +591,7 @@ with st.expander("自定义更表规则（小组）"):
                 edited_windows_df = st.data_editor(
                     windows_df,
                     num_rows="dynamic",
-                    use_container_width=True,
+                    width="stretch",
                     key=f"{key_prefix}windows",
                 )
 
