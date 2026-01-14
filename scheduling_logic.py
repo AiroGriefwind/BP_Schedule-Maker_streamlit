@@ -137,6 +137,13 @@ def save_group_rules(group_rules=None, also_write_local=True):
     GROUP_RULES["updated_at"] = _now_utc_iso()
     fm.save_data("group_rules", GROUP_RULES)
 
+    # Also keep a copy in Firebase Storage for easy auditing / backup
+    try:
+        fm.save_json_to_storage("config/group_rules.json", GROUP_RULES)
+    except Exception:
+        # Storage sync is best-effort; DB is source of truth.
+        pass
+
     if also_write_local:
         try:
             with open(GROUP_RULES_FILE, "w", encoding="utf-8") as f:
@@ -1085,6 +1092,10 @@ def save_role_rules():
     """Save the ROLE_RULES dictionary to Firebase."""
     try:
         fm.save_data('role_rules', ROLE_RULES)
+        try:
+            fm.save_json_to_storage("config/role_rules.json", ROLE_RULES)
+        except Exception:
+            pass
     except Exception as e:
         print(f"Error saving role rules: {str(e)}")
 

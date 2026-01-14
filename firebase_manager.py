@@ -198,6 +198,19 @@ def save_data(path, data):
     ref.set(data)
 
 
+def save_json_to_storage(remote_path, data, content_type="application/json"):
+    """
+    Save a JSON-serializable object to Firebase Storage.
+    Example remote_path: "config/group_rules.json"
+    """
+    # Requires initialize_firebase() to have been called with storageBucket configured.
+    bucket = storage.bucket()
+    blob = bucket.blob(remote_path)
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    blob.upload_from_string(payload, content_type=content_type)
+    return f"gs://{bucket.name}/{remote_path}"
+
+
 def upload_initial_data(files=None):
     """
     Upload local JSON files into Firebase DB.
