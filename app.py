@@ -388,6 +388,23 @@ with st.expander("自定义更表规则（小组）"):
         st.warning("当前部署环境的 `scheduling_logic.py` 版本不包含小组规则功能（load_group_rules）。请确保已把最新代码部署/推送后再使用此功能。")
         st.stop()
 
+    def _reset_group_edit_widgets():
+        """
+        When switching the selected group, we must clear the edit widget keys.
+        Otherwise Streamlit will reuse previous widget state and the UI appears "not refreshed".
+        """
+        for k in [
+            "edit_group_name",
+            "edit_group_desc",
+            "edit_group_active",
+            "edit_group_headcount",
+            "edit_group_members",
+            "edit_group_windows",
+            "confirm_delete_group",
+        ]:
+            if k in st.session_state:
+                del st.session_state[k]
+
     # Refresh from Firebase
     cols = st.columns([1, 1, 2])
     with cols[0]:
@@ -406,15 +423,31 @@ with st.expander("自定义更表规则（小组）"):
 
     # Overview
     if groups:
-        summary_rows = []
+        st.markdown("**概览（点击“成员”可展开查看）**")
+        header_cols = st.columns([2, 4, 1, 1])
+        header_cols[0].markdown("**名称**")
+        header_cols[1].markdown("**成员**")
+        header_cols[2].markdown("**成员数**")
+        header_cols[3].markdown("**规则段数**")
+
         for g in groups:
-            summary_rows.append({
-                "名称": g.get("name"),
-                "启用": bool(g.get("active", True)),
-                "成员数": len(g.get("members", []) or []),
-                "规则段数": len(g.get("requirements_windows", []) or []),
-            })
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+            name = g.get("name")
+            members = g.get("members", []) or []
+            rules = g.get("requirements_windows", []) or []
+            member_count = len(members)
+            rules_count = len(rules)
+
+            row_cols = st.columns([2, 4, 1, 1], vertical_alignment="center")
+            with row_cols[0]:
+                st.write(name)
+            with row_cols[1]:
+                with st.expander(f"成员（{member_count}）", expanded=False):
+                    if members:
+                        st.write("、".join(members))
+                    else:
+                        st.caption("（无成员）")
+            row_cols[2].write(member_count)
+            row_cols[3].write(rules_count)
     else:
         st.info("当前还没有任何小组。你可以在下面创建一个。")
 
@@ -473,7 +506,12 @@ with st.expander("自定义更表规则（小组）"):
     st.subheader("编辑/删除现有小组")
     if groups:
         name_to_group = {g.get("name"): g for g in groups if g.get("name")}
-        selected_group_name = st.selectbox("选择小组", options=list(name_to_group.keys()))
+        selected_group_name = st.selectbox(
+            "选择小组",
+            options=list(name_to_group.keys()),
+            key="selected_group_name",
+            on_change=_reset_group_edit_widgets,
+        )
         g = name_to_group.get(selected_group_name)
 
         if g:
