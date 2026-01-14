@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import json
+import uuid
 from scheduling_logic import (
     load_employees,
     load_data,
@@ -20,6 +21,9 @@ from scheduling_logic import (
     get_last_generated_schedule,
     EMPLOYEES,
     ROLE_RULES,
+    load_group_rules,
+    save_group_rules,
+    GROUP_RULES,
 )
 
 import firebase_manager as fm
@@ -38,7 +42,7 @@ if st.button("Upload Initial Data to Firebase"):
 # --- State Management ---
 def initialize_session_state():
     """Load initial data into the session state."""
-    if 'initialized' not in st.session_state:
+    if not st.session_state.get('initialized'):
         st.session_state.start_date = datetime(2025, 3, 17)
         st.session_state.employees = load_employees()
         
@@ -46,6 +50,7 @@ def initialize_session_state():
         sync_availability() 
         
         st.session_state.availability = load_data()
+        st.session_state.group_rules = load_group_rules()
         
         if not st.session_state.availability:
             st.session_state.availability = init_availability(
@@ -309,6 +314,10 @@ availability_json = json.dumps(availability_serializable, indent=4)
 
 st.sidebar.download_button("Download availability.json", availability_json, "availability.json")
 
+# Download group rules
+group_rules_json = json.dumps(st.session_state.get("group_rules") or GROUP_RULES, ensure_ascii=False, indent=2)
+st.sidebar.download_button("Download group_rules.json", group_rules_json, "group_rules.json")
+
 
 # --- Main Page UI ---
 st.title("Employee Availability Editor")
@@ -359,6 +368,165 @@ with st.expander("Manage Employees"):
                 st.toast(f"🗑️ Employee '{selected_employee_name}' deleted.")
                 st.session_state.initialized = False
                 st.rerun()
+
+
+# --- Custom Group Rules (Team Rules) ---
+with st.expander("自定义更表规则（小组）"):
+    # Refresh from Firebase
+    cols = st.columns([1, 1, 2])
+    with cols[0]:
+        if st.button("🔄 从Firebase刷新小组规则"):
+            st.session_state.group_rules = load_group_rules()
+            st.toast("已刷新小组规则。")
+    with cols[1]:
+        if st.button("💾 保存小组规则到Firebase", type="primary"):
+            save_group_rules(st.session_state.group_rules)
+            st.toast("小组规则已保存到 Firebase。")
+
+    group_rules = st.session_state.get("group_rules") or GROUP_RULES
+    groups = group_rules.get("groups", [])
+
+    st.caption("说明：小组规则用于校验排班是否满足“某时段最少需要多少人值更”。目前按“小时”进行覆盖校验。")
+
+    # Overview
+    if groups:
+        summary_rows = []
+        for g in groups:
+            summary_rows.append({
+                "名称": g.get("name"),
+                "启用": bool(g.get("active", True)),
+                "成员数": len(g.get("members", []) or []),
+                "规则段数": len(g.get("requirements_windows", []) or []),
+            })
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+    else:
+        st.info("当前还没有任何小组。你可以在下面创建一个。")
+
+    employee_names = [e.name for e in st.session_state.employees]
+
+    st.subheader("创建新小组")
+    with st.form("create_group_form", clear_on_submit=True):
+        new_name = st.text_input("小组名称（必填）")
+        new_desc = st.text_input("备注/说明（可选）")
+        new_active = st.checkbox("启用", value=True)
+        new_headcount = st.number_input("规划人数（可选）", min_value=0, value=0, step=1)
+        new_members = st.multiselect("成员（从现有员工中选择）", options=employee_names, default=[])
+
+        st.markdown("规则段（可多段）：每一段表示在该时间窗内，每个小时至少需要多少名成员在岗。")
+        default_windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
+        win_df = st.data_editor(default_windows_df, num_rows="dynamic", use_container_width=True, key="new_group_windows")
+
+        submitted = st.form_submit_button("创建小组")
+        if submitted:
+            if not new_name.strip():
+                st.error("小组名称不能为空。")
+            else:
+                # Prevent duplicate names
+                if any(g.get("name") == new_name.strip() for g in groups):
+                    st.error("已存在同名小组，请换一个名称。")
+                else:
+                    windows = []
+                    for _, r in win_df.iterrows():
+                        day_type = str(r.get("day_type", "all")).strip().lower()
+                        start = str(r.get("start", "00:00")).strip()
+                        end = str(r.get("end", "24:00")).strip()
+                        try:
+                            min_staff = int(r.get("min_staff", 1))
+                        except Exception:
+                            min_staff = 1
+                        if not start or not end:
+                            continue
+                        windows.append({"day_type": day_type, "start": start, "end": end, "min_staff": min_staff})
+
+                    new_group = {
+                        "id": uuid.uuid4().hex,
+                        "name": new_name.strip(),
+                        "description": new_desc.strip(),
+                        "active": bool(new_active),
+                        "headcount_planned": int(new_headcount) if new_headcount else None,
+                        "members": list(new_members),
+                        "requirements_windows": windows,
+                    }
+                    group_rules.setdefault("groups", []).append(new_group)
+                    st.session_state.group_rules = group_rules
+                    save_group_rules(st.session_state.group_rules)
+                    st.toast(f"✅ 小组“{new_name.strip()}”已创建并保存。")
+                    st.session_state.initialized = False
+                    st.rerun()
+
+    st.subheader("编辑/删除现有小组")
+    if groups:
+        name_to_group = {g.get("name"): g for g in groups if g.get("name")}
+        selected_group_name = st.selectbox("选择小组", options=list(name_to_group.keys()))
+        g = name_to_group.get(selected_group_name)
+
+        if g:
+            edit_cols = st.columns([2, 2])
+            with edit_cols[0]:
+                edited_name = st.text_input("小组名称", value=g.get("name", ""), key="edit_group_name")
+                edited_desc = st.text_input("备注/说明", value=g.get("description", ""), key="edit_group_desc")
+                edited_active = st.checkbox("启用", value=bool(g.get("active", True)), key="edit_group_active")
+                edited_headcount = st.number_input(
+                    "规划人数（可选）", min_value=0, value=int(g.get("headcount_planned") or 0), step=1, key="edit_group_headcount"
+                )
+                edited_members = st.multiselect(
+                    "成员（从现有员工中选择）",
+                    options=employee_names,
+                    default=[m for m in (g.get("members") or []) if m in employee_names],
+                    key="edit_group_members",
+                )
+
+            with edit_cols[1]:
+                windows_df = pd.DataFrame(g.get("requirements_windows") or [])
+                if windows_df.empty:
+                    windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
+                edited_windows_df = st.data_editor(windows_df, num_rows="dynamic", use_container_width=True, key="edit_group_windows")
+
+            action_cols = st.columns([1, 1, 2])
+            with action_cols[0]:
+                if st.button("保存该小组修改", type="primary"):
+                    # Validate rename collisions
+                    new_name_norm = edited_name.strip()
+                    if not new_name_norm:
+                        st.error("小组名称不能为空。")
+                    elif new_name_norm != g.get("name") and any(x.get("name") == new_name_norm for x in groups):
+                        st.error("已存在同名小组，请换一个名称。")
+                    else:
+                        new_windows = []
+                        for _, r in edited_windows_df.iterrows():
+                            day_type = str(r.get("day_type", "all")).strip().lower()
+                            start = str(r.get("start", "00:00")).strip()
+                            end = str(r.get("end", "24:00")).strip()
+                            try:
+                                min_staff = int(r.get("min_staff", 1))
+                            except Exception:
+                                min_staff = 1
+                            if not start or not end:
+                                continue
+                            new_windows.append({"day_type": day_type, "start": start, "end": end, "min_staff": min_staff})
+
+                        g["name"] = new_name_norm
+                        g["description"] = edited_desc.strip()
+                        g["active"] = bool(edited_active)
+                        g["headcount_planned"] = int(edited_headcount) if edited_headcount else None
+                        g["members"] = list(edited_members)
+                        g["requirements_windows"] = new_windows
+
+                        st.session_state.group_rules = group_rules
+                        save_group_rules(st.session_state.group_rules)
+                        st.toast("✅ 已保存小组修改到 Firebase。")
+                        st.session_state.initialized = False
+                        st.rerun()
+
+            with action_cols[1]:
+                confirm_delete = st.checkbox("确认删除", value=False, key="confirm_delete_group")
+                if st.button("删除该小组", type="secondary", disabled=not confirm_delete):
+                    group_rules["groups"] = [x for x in group_rules.get("groups", []) if x.get("id") != g.get("id")]
+                    st.session_state.group_rules = group_rules
+                    save_group_rules(st.session_state.group_rules)
+                    st.toast("🗑️ 小组已删除并保存到 Firebase。")
+                    st.session_state.initialized = False
+                    st.rerun()
 
 
 # --- Availability Editor ---

@@ -5,14 +5,178 @@ import pandas as pd
 from pandas import DataFrame, read_excel, isna, notna
 #from collections import deque  
 from datetime import datetime, timedelta
+import os
+import uuid
 
 import firebase_manager as fm
 fm.initialize_firebase()
 ROLE_RULES = {}
+GROUP_RULES = {"version": 1, "updated_at": None, "groups": []}
+GROUP_RULES_FILE = "group_rules.json"
 
 def initialize():
     """Initialize the module by loading data from files"""
     load_role_rules()
+    load_group_rules()
+
+
+def _now_utc_iso():
+    return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+def _default_group_rules():
+    return {"version": 1, "updated_at": None, "groups": []}
+
+
+def _normalize_group_rules(data):
+    """
+    Ensure group rules have a stable schema.
+
+    Schema (version 1):
+    {
+      "version": 1,
+      "updated_at": "2026-01-14T00:00:00Z" | null,
+      "groups": [
+        {
+          "id": "uuid",
+          "name": "韩娱组",
+          "description": "",
+          "active": true,
+          "headcount_planned": 0 | null,
+          "members": ["Alice", "Bob"],
+          "requirements_windows": [
+            {"day_type":"all|weekday|weekend","start":"00:00","end":"24:00","min_staff":1}
+          ]
+        }
+      ]
+    }
+    """
+    if not isinstance(data, dict):
+        data = _default_group_rules()
+
+    version = data.get("version", 1)
+    groups = data.get("groups", [])
+    if not isinstance(groups, list):
+        groups = []
+
+    norm_groups = []
+    for g in groups:
+        if not isinstance(g, dict):
+            continue
+        gid = g.get("id") or uuid.uuid4().hex
+        name = str(g.get("name") or "").strip()
+        if not name:
+            # Skip unnamed groups to avoid UI/logic ambiguity
+            continue
+        members = g.get("members") or []
+        if not isinstance(members, list):
+            members = []
+        members = [str(m).strip() for m in members if str(m).strip()]
+        # de-dup while keeping order
+        seen = set()
+        members = [m for m in members if not (m in seen or seen.add(m))]
+
+        windows = g.get("requirements_windows") or []
+        if not isinstance(windows, list):
+            windows = []
+        norm_windows = []
+        for w in windows:
+            if not isinstance(w, dict):
+                continue
+            day_type = (w.get("day_type") or "all").strip().lower()
+            if day_type not in {"all", "weekday", "weekend"}:
+                day_type = "all"
+            start = str(w.get("start") or "00:00").strip()
+            end = str(w.get("end") or "24:00").strip()
+            try:
+                min_staff = int(w.get("min_staff", 1))
+            except Exception:
+                min_staff = 1
+            if min_staff < 0:
+                min_staff = 0
+            norm_windows.append(
+                {"day_type": day_type, "start": start, "end": end, "min_staff": min_staff}
+            )
+
+        norm_groups.append(
+            {
+                "id": gid,
+                "name": name,
+                "description": str(g.get("description") or ""),
+                "active": bool(g.get("active", True)),
+                "headcount_planned": g.get("headcount_planned", None),
+                "members": members,
+                "requirements_windows": norm_windows,
+            }
+        )
+
+    return {"version": version, "updated_at": data.get("updated_at"), "groups": norm_groups}
+
+
+def load_group_rules():
+    """Load GROUP_RULES from Firebase if it exists, else fall back to local JSON file."""
+    global GROUP_RULES
+    data = fm.get_data("group_rules")
+    if not data and os.path.exists(GROUP_RULES_FILE):
+        try:
+            with open(GROUP_RULES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+
+    GROUP_RULES = _normalize_group_rules(data)
+    return GROUP_RULES
+
+
+def save_group_rules(group_rules=None, also_write_local=True):
+    """Save GROUP_RULES to Firebase (and optionally to local JSON seed file)."""
+    global GROUP_RULES
+    if group_rules is not None:
+        GROUP_RULES = _normalize_group_rules(group_rules)
+
+    GROUP_RULES["updated_at"] = _now_utc_iso()
+    fm.save_data("group_rules", GROUP_RULES)
+
+    if also_write_local:
+        try:
+            with open(GROUP_RULES_FILE, "w", encoding="utf-8") as f:
+                json.dump(GROUP_RULES, f, ensure_ascii=False, indent=2)
+        except Exception:
+            # Local file write is best-effort; Firebase is source of truth in production.
+            pass
+
+
+def _sync_groups_after_employee_rename(old_name, new_name):
+    """Update GROUP_RULES membership when an employee name changes."""
+    global GROUP_RULES
+    if not old_name or not new_name or old_name == new_name:
+        return
+    changed = False
+    for g in GROUP_RULES.get("groups", []):
+        members = g.get("members", [])
+        if old_name in members:
+            g["members"] = [new_name if m == old_name else m for m in members]
+            # de-dup
+            seen = set()
+            g["members"] = [m for m in g["members"] if not (m in seen or seen.add(m))]
+            changed = True
+    if changed:
+        save_group_rules(GROUP_RULES)
+
+
+def _sync_groups_after_employee_delete(name):
+    """Remove deleted employee name from all groups."""
+    global GROUP_RULES
+    if not name:
+        return
+    changed = False
+    for g in GROUP_RULES.get("groups", []):
+        members = g.get("members", [])
+        if name in members:
+            g["members"] = [m for m in members if m != name]
+            changed = True
+    if changed:
+        save_group_rules(GROUP_RULES)
 
 class Employee:
     def __init__(self, name, employee_type, additional_roles=None, start_time=None, end_time=None):
@@ -329,6 +493,9 @@ def edit_employee(old_name, new_name, new_role, additional_roles=None, new_start
                 emp.end_time = new_end_time
             break
 
+    # Keep group membership consistent when names change
+    _sync_groups_after_employee_rename(old_name, new_name)
+
     availability = load_data()
     for date in availability:
         if old_name in availability[date]:
@@ -358,6 +525,9 @@ def delete_employee(name):
         # Save the updated employee list to JSON
         save_employees()
 
+        # Remove from group membership rules
+        _sync_groups_after_employee_delete(name)
+
         # Update availability data
         availability = load_data()
         for date in availability:
@@ -373,6 +543,166 @@ _last_generated_schedule = []
 def get_last_generated_schedule():
     global _last_generated_schedule
     return _last_generated_schedule
+
+
+def _parse_time_to_minutes(t):
+    """
+    Accepts: "7", "07", "0930", "09:30", "24", "24:00".
+    Returns minutes in [0, 1440].
+    """
+    s = str(t).strip()
+    if not s:
+        return None
+    s = s.replace("：", ":")
+    if ":" in s:
+        hh, mm = s.split(":", 1)
+        hh = hh.strip()
+        mm = mm.strip()
+        if not hh:
+            return None
+        if mm == "":
+            mm = "0"
+        try:
+            h = int(hh)
+            m = int(mm)
+        except Exception:
+            return None
+        if h == 24 and m == 0:
+            return 1440
+        if h < 0 or h > 23 or m < 0 or m > 59:
+            return None
+        return h * 60 + m
+
+    # Pure digits: could be "7", "07", "0930"
+    if not s.isdigit():
+        return None
+    if len(s) <= 2:
+        try:
+            h = int(s)
+        except Exception:
+            return None
+        if h == 24:
+            return 1440
+        if h < 0 or h > 23:
+            return None
+        return h * 60
+    if len(s) == 4:
+        try:
+            h = int(s[:2])
+            m = int(s[2:])
+        except Exception:
+            return None
+        if h == 24 and m == 0:
+            return 1440
+        if h < 0 or h > 23 or m < 0 or m > 59:
+            return None
+        return h * 60 + m
+    return None
+
+
+def _parse_shift_range(shift):
+    """
+    Parse "start-end" where each side can be like "7", "0930", "09:30", "24".
+    Returns (start_min, end_min) in minutes on the same day, end is clamped to 1440.
+    Supports overnight shifts by clamping to end-of-day for validation purposes.
+    """
+    if not shift or "-" not in str(shift):
+        return None
+    s = str(shift).strip()
+    parts = s.split("-", 1)
+    if len(parts) != 2:
+        return None
+    a = _parse_time_to_minutes(parts[0].strip())
+    b = _parse_time_to_minutes(parts[1].strip())
+    if a is None or b is None:
+        return None
+
+    # Overnight handling: e.g. 23-7 => treat as 23:00-24:00 for current date validation
+    if b < a:
+        b = 1440
+    if b > 1440:
+        b = 1440
+    return (a, b)
+
+
+def validate_schedule_against_group_rules(schedule_list, group_rules=None):
+    """
+    Validate generated schedule vs group coverage windows.
+    Returns warnings (list[str]). Does not modify schedule.
+    """
+    group_rules = _normalize_group_rules(group_rules if group_rules is not None else GROUP_RULES)
+    warnings = []
+    if not schedule_list:
+        return warnings
+
+    # Prepare per-day assignment map: iso_date -> {employee_name: shift_string}
+    for entry in schedule_list:
+        try:
+            d = entry.get("Date")
+            if not d:
+                continue
+            # entry["Date"] is dd/mm/YYYY in current generator
+            date_obj = datetime.strptime(d, "%d/%m/%Y")
+            iso = date_obj.strftime("%Y-%m-%d")
+            day_type = "weekend" if date_obj.weekday() >= 5 else "weekday"
+        except Exception:
+            continue
+
+        # Only shift-like values count as coverage (must contain "-")
+        for g in group_rules.get("groups", []):
+            if not g.get("active", True):
+                continue
+            members = g.get("members", [])
+            if not members:
+                continue
+            windows = g.get("requirements_windows", [])
+            if not windows:
+                continue
+
+            for w in windows:
+                w_day = (w.get("day_type") or "all").lower()
+                if w_day not in {"all", day_type}:
+                    continue
+                start_m = _parse_time_to_minutes(w.get("start", "00:00"))
+                end_m = _parse_time_to_minutes(w.get("end", "24:00"))
+                if start_m is None or end_m is None:
+                    continue
+                if end_m < start_m:
+                    # Reject invalid window silently (UI should avoid this)
+                    continue
+                min_staff = int(w.get("min_staff", 0) or 0)
+                if min_staff <= 0:
+                    continue
+
+                # Check each hour bucket that starts within [start_m, end_m)
+                hour_start = (start_m // 60) * 60
+                while hour_start < end_m:
+                    hour_end = min(hour_start + 60, 1440)
+                    # Only validate if this hour overlaps window
+                    if hour_end <= start_m:
+                        hour_start += 60
+                        continue
+                    if hour_start >= end_m:
+                        break
+
+                    staffed = 0
+                    for m in members:
+                        v = entry.get(m)
+                        rng = _parse_shift_range(v) if v else None
+                        if not rng:
+                            continue
+                        s_min, e_min = rng
+                        # overlap test with [hour_start, hour_end)
+                        if max(s_min, hour_start) < min(e_min, hour_end):
+                            staffed += 1
+                    if staffed < min_staff:
+                        warnings.append(
+                            f"小组规则不足：{iso} {hour_start//60:02d}:00-{hour_end//60:02d}:00，"
+                            f"小组“{g['name']}”需要≥{min_staff}人，实际{staffed}人。"
+                        )
+                    hour_start += 60
+
+    return warnings
 
 def generate_schedule(availability, start_date, export_to_excel=True, file_path=None):
     global _last_generated_schedule
@@ -400,6 +730,13 @@ def generate_schedule(availability, start_date, export_to_excel=True, file_path=
     
     # Convert the date-organized dictionary to a flat schedule list
     schedule = [entry for _, entry in sorted(schedule_by_date.items())]
+
+    # Validate vs custom group rules (if any)
+    try:
+        warnings.extend(validate_schedule_against_group_rules(schedule, GROUP_RULES))
+    except Exception:
+        # Validation should never break schedule generation
+        pass
     
     # Store the generated schedule
     _last_generated_schedule = schedule

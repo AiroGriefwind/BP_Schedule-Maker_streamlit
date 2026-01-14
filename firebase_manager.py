@@ -196,3 +196,24 @@ def save_data(path, data):
     """Overwrite data at the given Firebase DB path with the passed dict/list."""
     ref = db.reference(path)
     ref.set(data)
+
+
+def upload_initial_data(files=None):
+    """
+    Upload local JSON files into Firebase DB.
+    If `files` is None, uses the repo default set.
+    """
+    default_files = {
+        "availability": "availability.json",
+        "employees": "employees.json",
+        "role_rules": "role_rules.json",
+        "group_rules": "group_rules.json",
+    }
+    files = files or default_files
+    for key, filename in files.items():
+        if not os.path.exists(filename):
+            # Skip silently; some deployments may not carry all seed files.
+            continue
+        with open(filename, "r", encoding="utf-8") as f:
+            content = json.load(f)
+        save_data(key, content)
