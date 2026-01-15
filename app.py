@@ -985,6 +985,14 @@ with st.expander("自定义更表规则（小组）"):
     st.subheader("编辑/删除现有小组")
     if groups:
         name_to_group = {g.get("name"): g for g in groups if g.get("name")}
+
+        # If we need to update the selected group programmatically (e.g. after rename/delete),
+        # do it BEFORE the selectbox is instantiated to avoid StreamlitAPIException.
+        pending_key = "_pending_selected_group_name"
+        if pending_key in st.session_state:
+            st.session_state["selected_group_name"] = st.session_state[pending_key]
+            del st.session_state[pending_key]
+
         selected_group_name = st.selectbox(
             "选择小组",
             options=list(name_to_group.keys()),
@@ -1060,7 +1068,7 @@ with st.expander("自定义更表规则（小组）"):
                         save_group_rules(st.session_state.group_rules)
                         st.toast("✅ 已保存小组修改到 Firebase。")
                         # If renamed, keep selection in sync
-                        st.session_state.selected_group_name = new_name_norm
+                        st.session_state["_pending_selected_group_name"] = new_name_norm
                         st.session_state.initialized = False
                         st.rerun()
 
@@ -1078,7 +1086,7 @@ with st.expander("自定义更表规则（小组）"):
                     # After delete, reset selection to the first group (if any)
                     remaining = [x.get("name") for x in group_rules.get("groups", []) if x.get("name")]
                     if remaining:
-                        st.session_state.selected_group_name = remaining[0]
+                        st.session_state["_pending_selected_group_name"] = remaining[0]
                     elif "selected_group_name" in st.session_state:
                         del st.session_state["selected_group_name"]
                     st.session_state.initialized = False
