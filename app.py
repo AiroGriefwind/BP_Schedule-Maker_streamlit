@@ -4,6 +4,8 @@ from datetime import datetime
 import json
 import uuid
 import streamlit.components.v1 as components
+import re
+from typing import Dict, List, Tuple, Any, Optional
 from scheduling_logic import (
     load_employees,
     load_data,
@@ -153,6 +155,222 @@ def _availability_cell_value(cell):
     if isinstance(v, list):
         return ", ".join(map(str, v))
     return str(v)
+
+def _parse_time_to_minutes(t: str) -> Optional[int]:
+    t = (t or "").strip()
+    if not t:
+        return None
+    # HH:MM
+    if ":" in t:
+        hh, mm = t.split(":", 1)
+        try:
+            return int(hh) * 60 + int(mm)
+        except Exception:
+            return None
+    # 4-digit HHMM
+    if len(t) == 4 and t.isdigit():
+        return int(t[:2]) * 60 + int(t[2:])
+    # hour
+    try:
+        return int(float(t)) * 60
+    except Exception:
+        return None
+
+def _normalize_cell_str(v: Any) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, dict) and "value" in v:
+        v = v.get("value")
+    if v is None:
+        return ""
+    return str(v).strip()
+
+_LEAVE_CODES = {"AL", "CL", "PH", "ON"}
+
+def _is_leave_like(s: str) -> bool:
+    if not s:
+        return True
+    up = s.upper()
+    # explicit off/out/leave markers
+    if any(x in up for x in ["OFF", "OUT", "自由調配", "HALF OFF", "PH HALF"]):
+        return True
+    # token-level leave codes
+    tokens = re.split(r"[^A-Z0-9]+", up)
+    return any(tok in _LEAVE_CODES for tok in tokens if tok)
+
+def _intervals_from_cell(cell_value: Any) -> List[Tuple[int, int]]:
+    """
+    Parse a schedule cell into working intervals (minutes).
+    Supported:
+    - "10-19", "0930-1830"
+    - "10 OBS 19" / "7 OBS" (treated as 9h shift: 7-16)
+    - numeric hours like "10" / "15" / "7" (treated as 9h shift)
+    - multiple segments separated by commas: "8-17,15-24"
+    Leave codes (AL/CL/PH/ON etc) are treated as NOT working.
+    """
+    s = _normalize_cell_str(cell_value)
+    if not s:
+        return []
+
+    # If clearly leave-like AND no time patterns, treat as off
+    if _is_leave_like(s):
+        # But allow cells that contain actual time ranges despite annotations.
+        has_time_hint = bool(re.search(r"\d", s))
+        has_range = bool(re.search(r"\d\s*[-–]\s*\d", s)) or bool(re.search(r"\d{4}\s*-\s*\d{4}", s))
+        has_obs = "OBS" in s.upper()
+        if not (has_range or has_obs):
+            return []
+
+    up = s.upper()
+
+    intervals: List[Tuple[int, int]] = []
+
+    # 1) Explicit time ranges (supports 10-19, 0930-1830, 9:30-18:30)
+    range_re = re.compile(r"(\d{1,2}(?::\d{2})?|\d{4})\s*[-–]\s*(\d{1,2}(?::\d{2})?|\d{4})")
+    for a, b in range_re.findall(up):
+        sm = _parse_time_to_minutes(a)
+        em = _parse_time_to_minutes(b)
+        if sm is None or em is None:
+            continue
+        if em <= sm:
+            # e.g. 15-24 ok, but 24-0 not expected here; clamp later
+            continue
+        intervals.append((max(0, sm), min(24 * 60, em)))
+
+    # 2) OBS tagged ranges like "10 OBS 19"
+    obs_range_re = re.compile(r"\b(\d{1,2})\s*OBS\s*(\d{1,2})\b")
+    for a, b in obs_range_re.findall(up):
+        sm = _parse_time_to_minutes(a)
+        em = _parse_time_to_minutes(b)
+        if sm is None or em is None:
+            continue
+        if em <= sm:
+            continue
+        intervals.append((max(0, sm), min(24 * 60, em)))
+
+    # 3) OBS start only like "7 OBS" -> assume 9h
+    obs_start_re = re.compile(r"\b(\d{1,2})\s*OBS\b")
+    for a in obs_start_re.findall(up):
+        sm = _parse_time_to_minutes(a)
+        if sm is None:
+            continue
+        em = sm + 9 * 60
+        intervals.append((max(0, sm), min(24 * 60, em)))
+
+    # 4) pure numeric like "10" / "15.0" -> assume 9h, with a small special-case for 9 meaning 09:30
+    if not intervals:
+        m = re.fullmatch(r"\d+(?:\.\d+)?", s)
+        if m:
+            hour = int(float(s))
+            sm = hour * 60
+            # common convention: 9 means 09:30 (matches "0930-1830" seen in your sheets)
+            if hour == 9:
+                sm = 9 * 60 + 30
+            em = sm + 9 * 60
+            intervals.append((max(0, sm), min(24 * 60, em)))
+
+    # Merge overlaps
+    if not intervals:
+        return []
+    intervals.sort()
+    merged: List[Tuple[int, int]] = [intervals[0]]
+    for s0, e0 in intervals[1:]:
+        s1, e1 = merged[-1]
+        if s0 <= e1:
+            merged[-1] = (s1, max(e1, e0))
+        else:
+            merged.append((s0, e0))
+    return merged
+
+def _time_window_to_minutes(start: str, end: str) -> Tuple[int, int]:
+    s = _parse_time_to_minutes(start) or 0
+    e = _parse_time_to_minutes(end) or 24 * 60
+    if end.strip() == "24:00":
+        e = 24 * 60
+    return max(0, s), min(24 * 60, e)
+
+def validate_group_coverage_from_availability(
+    availability: Dict[str, Dict[str, Any]],
+    group: Dict[str, Any],
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Return (summary_df, deficits_df).
+    summary_df: per date total shortage-hours
+    deficits_df: per date/hour shortage details
+    """
+    members = [m for m in (group.get("members") or []) if m]
+    windows = group.get("requirements_windows") or []
+
+    # Pre-parse availability intervals per date/member
+    parsed: Dict[str, Dict[str, List[Tuple[int, int]]]] = {}
+    for date_key, emps in (availability or {}).items():
+        if not isinstance(emps, dict):
+            continue
+        parsed[date_key] = {}
+        for m in members:
+            cell = emps.get(m)
+            parsed[date_key][m] = _intervals_from_cell(cell)
+
+    rows = []
+    for date_key in sorted(parsed.keys()):
+        try:
+            d = pd.to_datetime(date_key).to_pydatetime()
+        except Exception:
+            continue
+        is_weekend = d.weekday() >= 5
+
+        for w in windows:
+            day_type = str(w.get("day_type") or "all").strip().lower()
+            if day_type == "weekday" and is_weekend:
+                continue
+            if day_type == "weekend" and not is_weekend:
+                continue
+            start_s = str(w.get("start") or "00:00")
+            end_s = str(w.get("end") or "24:00")
+            min_staff = int(w.get("min_staff") or 0)
+            ws, we = _time_window_to_minutes(start_s, end_s)
+            if we <= ws:
+                continue
+
+            for hour in range(ws // 60, (we + 59) // 60):
+                slot_s = hour * 60
+                slot_e = min((hour + 1) * 60, 24 * 60)
+                if slot_e <= ws or slot_s >= we:
+                    continue
+                on = []
+                for m in members:
+                    for is0, ie0 in parsed[date_key].get(m, []):
+                        # any overlap counts
+                        if max(is0, slot_s) < min(ie0, slot_e):
+                            on.append(m)
+                            break
+                staffed = len(on)
+                shortage = max(0, min_staff - staffed)
+                if shortage > 0:
+                    rows.append(
+                        {
+                            "date": date_key,
+                            "hour": f"{hour:02d}:00",
+                            "required": min_staff,
+                            "staffed": staffed,
+                            "shortage": shortage,
+                            "on_duty": "、".join(on),
+                            "window": f"{day_type} {start_s}-{end_s}",
+                        }
+                    )
+
+    deficits_df = pd.DataFrame(rows)
+    if deficits_df.empty:
+        summary_df = pd.DataFrame(columns=["date", "shortage_hours", "total_shortage"])
+        return summary_df, deficits_df
+
+    summary_df = (
+        deficits_df.groupby("date")
+        .agg(shortage_hours=("shortage", "count"), total_shortage=("shortage", "sum"))
+        .reset_index()
+        .sort_values(["total_shortage", "shortage_hours"], ascending=False)
+    )
+    return summary_df, deficits_df
 
 def _availability_cell_css(cell):
     """Extract CSS style string from availability cell (background + text color)."""
@@ -458,6 +676,15 @@ if st.sidebar.button("Save All Changes", type="primary"):
         save_employees()
         st.toast("💾 All changes saved to server files!")
 
+# Explicit save for imported availability (clarify persistence for users)
+if st.sidebar.button("保存当前总表到 Firebase（仅 availability）", type="secondary"):
+    try:
+        with st.spinner("Saving availability to Firebase..."):
+            save_data(st.session_state.availability)
+        st.toast("✅ 已保存当前 availability 到 Firebase。")
+    except Exception as e:
+        st.sidebar.error(f"保存失败：{e}")
+
 
 if st.sidebar.button("Clear All Availability"):
     st.session_state.availability = clear_availability(st.session_state.start_date, st.session_state.employees)
@@ -638,6 +865,38 @@ with st.expander("自定义更表规则（小组）"):
 
     group_rules = st.session_state.get("group_rules") or GROUP_RULES
     groups = group_rules.get("groups", [])
+
+    # --- Validate group coverage based on imported "total sheet" (availability) ---
+    st.subheader("验证小组需求（基于已导入的总表）")
+    if not groups:
+        st.info("暂无小组可验证。请先创建并保存小组规则。")
+    elif not st.session_state.get("availability"):
+        st.warning("当前还没有导入总表（availability）。请先在侧边栏导入主更表。")
+    else:
+        name_to_group2 = {g.get("name"): g for g in groups if g.get("name")}
+        sel_name = st.selectbox("选择要验证的小组", options=list(name_to_group2.keys()), key="validate_group_name")
+        only_deficits = st.checkbox("只显示有缺口的小时", value=True, key="validate_only_deficits")
+        if st.button("开始验证", type="primary", key="run_validate_group"):
+            gsel = name_to_group2.get(sel_name)
+            if not gsel:
+                st.error("未选择有效小组。")
+            else:
+                with st.spinner("正在按小时校验覆盖..."):
+                    summary_df, deficits_df = validate_group_coverage_from_availability(
+                        st.session_state.availability, gsel
+                    )
+                if deficits_df.empty:
+                    st.success(f"✅ 小组「{sel_name}」在当前总表日期范围内：所有规则段均满足（无缺口）。")
+                else:
+                    st.warning(f"⚠️ 小组「{sel_name}」存在缺口小时：{len(deficits_df)} 条")
+                    st.dataframe(summary_df, width="stretch", height=220)
+                    if only_deficits:
+                        st.dataframe(deficits_df, width="stretch", height=420)
+                    else:
+                        st.dataframe(deficits_df, width="stretch", height=420)
+
+        # Explicit save hint for imported availability
+        st.caption("提示：侧边栏导入总表只会更新本次会话内的数据；如需写入 Firebase，请点击侧边栏的 “Save All Changes”。")
 
     st.caption("说明：小组规则用于校验排班是否满足“某时段最少需要多少人值更”。目前按“小时”进行覆盖校验。")
 
