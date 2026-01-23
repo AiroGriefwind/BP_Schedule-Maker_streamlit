@@ -1443,8 +1443,10 @@ with st.expander("自定义更表规则（小组）"):
             key="validate_group_view_mode",
         )
         only_deficits = st.checkbox("明细仅显示缺口", value=True, key="validate_only_deficits")
+        gsel = name_to_group2.get(sel_name)
+
+        # Persist last validation result in session_state so widget interactions won't wipe the UI.
         if st.button("开始验证", type="primary", key="run_validate_group"):
-            gsel = name_to_group2.get(sel_name)
             if not gsel:
                 st.error("未选择有效小组。")
             else:
@@ -1452,22 +1454,46 @@ with st.expander("自定义更表规则（小组）"):
                     summary_df, deficits_df, all_checked_df = validate_group_coverage_from_availability(
                         st.session_state.availability, gsel
                     )
-                has_deficit = not deficits_df.empty
+                st.session_state["_validate_group_last_result"] = {
+                    "group_name": sel_name,
+                    "step_minutes": 30,
+                    "summary_df": summary_df,
+                    "deficits_df": deficits_df,
+                    "all_checked_df": all_checked_df,
+                    "computed_at": datetime.now().isoformat(timespec="seconds"),
+                }
+
+        # Render from last result (if it matches current selected group)
+        last = st.session_state.get("_validate_group_last_result")
+        if not gsel:
+            st.info("请选择一个有效小组，然后点击“开始验证”。")
+        elif not isinstance(last, dict) or last.get("group_name") != sel_name:
+            st.info("请点击“开始验证”生成结果后，再进行热力网格/单格明细查看。")
+        else:
+            summary_df = last.get("summary_df")
+            deficits_df = last.get("deficits_df")
+            all_checked_df = last.get("all_checked_df")
+            step_minutes = int(last.get("step_minutes") or 30)
+
+            # Defensive: ensure dataframes exist
+            if not isinstance(all_checked_df, pd.DataFrame) or all_checked_df.empty:
+                st.info("暂无可展示结果（可能规则段为空或导入日期为空）。")
+            else:
+                has_deficit = isinstance(deficits_df, pd.DataFrame) and (not deficits_df.empty)
                 if has_deficit:
-                    approx_hours = len(deficits_df) * 0.5
+                    approx_hours = len(deficits_df) * (step_minutes / 60.0)
                     st.warning(
-                        f"⚠️ 小组「{sel_name}」存在缺口时段（30min/格）：{len(deficits_df)} 条（约 {approx_hours:.1f} 小时）"
+                        f"⚠️ 小组「{sel_name}」存在缺口时段（{step_minutes}min/格）：{len(deficits_df)} 条（约 {approx_hours:.1f} 小时）"
                     )
                 else:
                     st.success(f"✅ 小组「{sel_name}」在当前总表日期范围内：所有规则段均满足（无缺口）。")
 
                 # Heatmap view
                 if view_mode == "热力网格（推荐）":
-                    rate_df, count_df = _build_group_coverage_heatmap_df(all_checked_df, step_minutes=30)
+                    rate_df, count_df = _build_group_coverage_heatmap_df(all_checked_df, step_minutes=step_minutes)
                     if rate_df.empty:
                         st.info("暂无可视化数据（可能规则段为空或日期解析失败）。")
                     else:
-                        # Show % values; gray means not in any validated window for that weekday/time
                         styled = rate_df.style.applymap(_heatmap_style_from_rate).format(
                             lambda x: "" if pd.isna(x) else f"{x*100:.0f}%"
                         )
@@ -1483,9 +1509,12 @@ with st.expander("自定义更表规则（小组）"):
                         with c1:
                             sel_day = st.selectbox("周几", options=day_cols, key="heatmap_sel_day")
                         with c2:
-                            sel_time = st.selectbox("时间格（30min）", options=list(rate_df.index) if not rate_df.empty else _TIME_OPTIONS_BASE[:-1], key="heatmap_sel_time")
+                            sel_time = st.selectbox(
+                                "时间格（30min）",
+                                options=list(rate_df.index) if isinstance(rate_df, pd.DataFrame) and (not rate_df.empty) else _TIME_OPTIONS_BASE[:-1],
+                                key="heatmap_sel_time",
+                            )
 
-                        # Map to candidate dates
                         wd_map = {"周一": 0, "周二": 1, "周三": 2, "周四": 3, "周五": 4, "周六": 5, "周日": 6}
                         want_wd = wd_map.get(sel_day, 0)
                         cand = all_checked_df.copy()
@@ -1496,13 +1525,11 @@ with st.expander("自定义更表规则（小组）"):
                             with c3:
                                 st.caption("该周几/时间格在导入的日期范围内没有被校验到（可能不在规则覆盖范围）。")
                         else:
-                            # Prefer deficit dates first
                             cand = cand.sort_values(["shortage", "date"], ascending=[False, True])
                             date_opts = list(dict.fromkeys([str(x) for x in cand["date"].tolist()]))
                             with c3:
                                 sel_date = st.selectbox("选择日期（同一周几/时间格可能有多天）", options=date_opts, key="heatmap_sel_date")
 
-                            # slot summary
                             row = cand[cand["date"] == sel_date].head(1)
                             if not row.empty:
                                 r0 = row.iloc[0].to_dict()
@@ -1510,7 +1537,6 @@ with st.expander("自定义更表规则（小组）"):
                                     f"该格校验结果：required={int(r0.get('required') or 0)} / staffed={int(r0.get('staffed') or 0)} / shortage={int(r0.get('shortage') or 0)}"
                                 )
 
-                            # Popover menu (Streamlit doesn't support hover-submenu; popover is closest)
                             with st.popover("明细"):
                                 detail_df = _build_cell_member_detail_df(
                                     availability=st.session_state.availability,
@@ -1518,7 +1544,7 @@ with st.expander("自定义更表规则（小组）"):
                                     group_rules=st.session_state.get("group_rules") or GROUP_RULES,
                                     date_key=sel_date,
                                     time_hhmm=sel_time,
-                                    step_minutes=30,
+                                    step_minutes=step_minutes,
                                 )
                                 st.dataframe(detail_df, width="stretch", height=240)
                                 st.caption("括号内为导入总表该日期该员工格子的原始内容；“无优先级”代表被更高 priority 的其他小组规则占用（预留接口）。")
@@ -1533,7 +1559,8 @@ with st.expander("自定义更表规则（小组）"):
                             st.dataframe(all_checked_df, width="stretch", height=420)
 
                 elif view_mode == "按日期汇总":
-                    st.dataframe(summary_df, width="stretch", height=260)
+                    if isinstance(summary_df, pd.DataFrame):
+                        st.dataframe(summary_df, width="stretch", height=260)
                     with st.expander("明细（可选）", expanded=False):
                         if only_deficits:
                             if has_deficit:
