@@ -563,6 +563,137 @@ def _heatmap_style_from_rate(v: Any) -> str:
     return f"background-color: rgb({rr},{gg},{bb}); color: #111827;"
 
 
+def _is_leave_like_raw(v: Any) -> bool:
+    """
+    Heuristic: treat non-shift, short alpha codes as leave (AL/SL/CL/...
+    Keeps this intentionally permissive; raw value will always be displayed verbatim.
+    """
+    if v is None:
+        return False
+    s = str(v).strip()
+    if not s:
+        return False
+    if len(s) > 6:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z]{1,6}", s))
+
+
+def _member_conflict_group_name(
+    *,
+    member: str,
+    date_obj: datetime,
+    slot_s: int,
+    slot_e: int,
+    current_group_name: str,
+    group_rules: Dict[str, Any],
+    current_priority: int,
+) -> Optional[str]:
+    """
+    Reserve interface for 'super employee' / cross-group priorities.
+
+    If a member belongs to another group with higher priority, and that group's
+    requirement windows cover this date/time slot, we mark the member as
+    conflicted by that group (meaning: their time should be considered unavailable
+    to the current group).
+    """
+    try:
+        groups = (group_rules or {}).get("groups", []) or []
+    except Exception:
+        groups = []
+    for g in groups:
+        try:
+            gname = str(g.get("name") or "").strip()
+            if not gname or gname == current_group_name:
+                continue
+            gprio = int(g.get("priority") or 0)
+            if gprio <= int(current_priority or 0):
+                continue
+            members = g.get("members") or []
+            if member not in members:
+                continue
+            windows = g.get("requirements_windows") or []
+            for w in windows:
+                day_type = str(w.get("day_type") or "all").strip().lower()
+                if not _day_type_applies_ui(day_type, date_obj):
+                    continue
+                ws, we = _time_window_to_minutes(str(w.get("start") or "00:00"), str(w.get("end") or "24:00"))
+                if we <= ws:
+                    continue
+                # overlap between this slot and that group's window
+                if max(ws, slot_s) < min(we, slot_e):
+                    return gname
+        except Exception:
+            continue
+    return None
+
+
+def _build_cell_member_detail_df(
+    *,
+    availability: Dict[str, Dict[str, Any]],
+    group: Dict[str, Any],
+    group_rules: Dict[str, Any],
+    date_key: str,
+    time_hhmm: str,
+    step_minutes: int = 30,
+) -> pd.DataFrame:
+    """
+    Build per-member status table for a specific (date, time slot).
+    Shows raw imported cell value verbatim in parentheses.
+    """
+    members = [m for m in (group.get("members") or []) if m]
+    current_group_name = str(group.get("name") or "").strip()
+    current_priority = int(group.get("priority") or 0)
+
+    try:
+        date_obj = pd.to_datetime(date_key).to_pydatetime()
+    except Exception:
+        date_obj = datetime.now()
+
+    slot_s = _parse_time_to_minutes(time_hhmm) or 0
+    slot_e = min(slot_s + int(step_minutes), 24 * 60)
+
+    emps = (availability or {}).get(date_key, {}) or {}
+    rows: List[Dict[str, Any]] = []
+    for m in members:
+        raw = emps.get(m)
+        raw_s = "" if raw is None else str(raw)
+        intervals = _intervals_from_cell(raw)
+        on_duty = any(max(is0, slot_s) < min(ie0, slot_e) for is0, ie0 in intervals)
+
+        conflict_group = _member_conflict_group_name(
+            member=m,
+            date_obj=date_obj,
+            slot_s=slot_s,
+            slot_e=slot_e,
+            current_group_name=current_group_name,
+            group_rules=group_rules,
+            current_priority=current_priority,
+        )
+
+        if on_duty:
+            status = "到岗"
+            detail = f"（{raw_s}）" if raw_s.strip() else "（空）"
+        else:
+            # Leave-like raw values first (AL/SL/...)
+            if _is_leave_like_raw(raw_s) and not intervals:
+                status = "请假"
+                detail = f"（{raw_s}）"
+            elif conflict_group:
+                status = "无优先级"
+                # keep raw verbatim + conflict group hint
+                if raw_s.strip():
+                    detail = f"（{raw_s}，{conflict_group}）"
+                else:
+                    detail = f"（空，{conflict_group}）"
+            else:
+                status = "未到岗"
+                detail = f"（{raw_s}）" if raw_s.strip() else "（空）"
+
+        rows.append({"成员": m, "状态": status, "明细": detail})
+
+    return pd.DataFrame(rows)
+
+
 # -----------------------------
 # Group rules editor helpers
 # -----------------------------
@@ -1344,6 +1475,53 @@ with st.expander("自定义更表规则（小组）"):
                         st.dataframe(styled, width="stretch", height=720)
                         with st.expander("查看每格样本量（该周几/时段被校验的次数）", expanded=False):
                             st.dataframe(count_df.fillna("").astype(str), width="stretch", height=480)
+
+                    # --- cell detail (interactive) ---
+                    with st.expander("单格明细（实验：选一个周几+时间格，然后点“明细”）", expanded=False):
+                        day_cols = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+                        c1, c2, c3 = st.columns([1, 1, 2])
+                        with c1:
+                            sel_day = st.selectbox("周几", options=day_cols, key="heatmap_sel_day")
+                        with c2:
+                            sel_time = st.selectbox("时间格（30min）", options=list(rate_df.index) if not rate_df.empty else _TIME_OPTIONS_BASE[:-1], key="heatmap_sel_time")
+
+                        # Map to candidate dates
+                        wd_map = {"周一": 0, "周二": 1, "周三": 2, "周四": 3, "周五": 4, "周六": 5, "周日": 6}
+                        want_wd = wd_map.get(sel_day, 0)
+                        cand = all_checked_df.copy()
+                        cand["date_dt"] = pd.to_datetime(cand["date"], errors="coerce")
+                        cand = cand.dropna(subset=["date_dt"])
+                        cand = cand[(cand["time"] == sel_time) & (cand["date_dt"].dt.dayofweek == want_wd)]
+                        if cand.empty:
+                            with c3:
+                                st.caption("该周几/时间格在导入的日期范围内没有被校验到（可能不在规则覆盖范围）。")
+                        else:
+                            # Prefer deficit dates first
+                            cand = cand.sort_values(["shortage", "date"], ascending=[False, True])
+                            date_opts = list(dict.fromkeys([str(x) for x in cand["date"].tolist()]))
+                            with c3:
+                                sel_date = st.selectbox("选择日期（同一周几/时间格可能有多天）", options=date_opts, key="heatmap_sel_date")
+
+                            # slot summary
+                            row = cand[cand["date"] == sel_date].head(1)
+                            if not row.empty:
+                                r0 = row.iloc[0].to_dict()
+                                st.caption(
+                                    f"该格校验结果：required={int(r0.get('required') or 0)} / staffed={int(r0.get('staffed') or 0)} / shortage={int(r0.get('shortage') or 0)}"
+                                )
+
+                            # Popover menu (Streamlit doesn't support hover-submenu; popover is closest)
+                            with st.popover("明细"):
+                                detail_df = _build_cell_member_detail_df(
+                                    availability=st.session_state.availability,
+                                    group=gsel,
+                                    group_rules=st.session_state.get("group_rules") or GROUP_RULES,
+                                    date_key=sel_date,
+                                    time_hhmm=sel_time,
+                                    step_minutes=30,
+                                )
+                                st.dataframe(detail_df, width="stretch", height=240)
+                                st.caption("括号内为导入总表该日期该员工格子的原始内容；“无优先级”代表被更高 priority 的其他小组规则占用（预留接口）。")
 
                     with st.expander("明细（可选）", expanded=False):
                         if only_deficits:
