@@ -1,11 +1,13 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
+import os
 import json
 import uuid
 import streamlit.components.v1 as components
 import re
 from typing import Dict, List, Tuple, Any, Optional
+from pathlib import Path
 from scheduling_logic import (
     load_employees,
     load_data,
@@ -45,8 +47,101 @@ import firebase_manager as fm
 fm.initialize_firebase()
 
 # --- Main App ---
-st.set_page_config(page_title="BP Schedule Maker", layout="wide")
-st.title("Auto-Schedule Maker")
+def _safe_get_secret(key: str) -> Optional[str]:
+    """Best-effort read from Streamlit secrets without hard-failing in environments w/o secrets."""
+    try:
+        # st.secrets behaves like a dict; .get may not exist on older versions
+        if hasattr(st, "secrets") and st.secrets is not None:
+            try:
+                if key in st.secrets:
+                    return str(st.secrets[key]).strip()
+            except Exception:
+                pass
+            try:
+                v = st.secrets.get(key)  # type: ignore[attr-defined]
+                if v is not None:
+                    return str(v).strip()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
+def _detect_branch_name() -> Optional[str]:
+    """Detect current branch name via env vars or .git/HEAD (works in many deploy setups)."""
+    env_candidates = [
+        "STREAMLIT_GIT_BRANCH",
+        "STREAMLIT_BRANCH",
+        "GIT_BRANCH",
+        "BRANCH_NAME",
+        "GITHUB_REF_NAME",
+        "GITHUB_REF",
+        "CI_COMMIT_REF_NAME",
+    ]
+    for k in env_candidates:
+        v = os.getenv(k)
+        if not v:
+            continue
+        v = v.strip()
+        # e.g. refs/heads/test
+        if v.startswith("refs/heads/"):
+            return v.split("/")[-1]
+        # e.g. origin/test
+        if "/" in v and not v.startswith("http"):
+            return v.split("/")[-1]
+        return v
+
+    try:
+        head_path = Path(__file__).resolve().parent / ".git" / "HEAD"
+        if head_path.exists():
+            head = head_path.read_text(encoding="utf-8", errors="ignore").strip()
+            if head.startswith("ref:"):
+                ref = head.split(":", 1)[1].strip()
+                return ref.split("/")[-1]
+    except Exception:
+        pass
+
+    return None
+
+
+def _resolve_app_version() -> str:
+    """
+    Resolve app version marker for UI labeling.
+    Priority: Streamlit secrets -> env -> branch name -> stable.
+    """
+    # 1) Streamlit secrets (supports legacy key with space)
+    for key in ("APP_VERSION", "APP VERSION", "APPVERSION"):
+        v = _safe_get_secret(key)
+        if v:
+            return v
+
+    # 2) Environment variables (works for many CI/deploy setups)
+    for key in ("APP_VERSION", "APPVERSION"):
+        v = os.getenv(key)
+        if v:
+            return v.strip()
+
+    # 3) Branch-based inference
+    branch = _detect_branch_name()
+    if branch:
+        b = branch.lower()
+        if b == "test" or "test" in b:
+            return "beta"
+
+    return "stable"
+
+
+def get_app_title(base_title: str) -> str:
+    """Get the appropriate app title based on environment/version."""
+    version = _resolve_app_version().lower()
+    if version in ("beta", "test", "testing", "dev"):
+        return f"{base_title} (Beta)"
+    return base_title
+
+
+st.set_page_config(page_title=get_app_title("BP Schedule Maker"), layout="wide")
+st.title(get_app_title("Auto-Schedule Maker"))
 
 
 
