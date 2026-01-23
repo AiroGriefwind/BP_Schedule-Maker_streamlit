@@ -387,11 +387,13 @@ def _time_window_to_minutes(start: str, end: str) -> Tuple[int, int]:
 def validate_group_coverage_from_availability(
     availability: Dict[str, Dict[str, Any]],
     group: Dict[str, Any],
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Return (summary_df, deficits_df).
-    summary_df: per date total shortage-hours
-    deficits_df: per date/hour shortage details
+    Return (summary_df, deficits_df, all_checked_df).
+
+    - summary_df: per date shortage summary (units = checked slots, slot size inferred by `time` step)
+    - deficits_df: only rows with shortage > 0
+    - all_checked_df: all checked rows (including shortage == 0), per date/time slot
     """
     members = [m for m in (group.get("members") or []) if m]
     windows = group.get("requirements_windows") or []
@@ -406,7 +408,9 @@ def validate_group_coverage_from_availability(
             cell = emps.get(m)
             parsed[date_key][m] = _intervals_from_cell(cell)
 
-    rows = []
+    # Default to 30-minute granularity for UI visualization; callers can ignore the extra resolution.
+    step_minutes = 30
+    all_rows: List[Dict[str, Any]] = []
     for date_key in sorted(parsed.keys()):
         try:
             d = pd.to_datetime(date_key).to_pydatetime()
@@ -424,9 +428,12 @@ def validate_group_coverage_from_availability(
             if we <= ws:
                 continue
 
-            for hour in range(ws // 60, (we + 59) // 60):
-                slot_s = hour * 60
-                slot_e = min((hour + 1) * 60, 24 * 60)
+            # iterate by step_minutes, but only validate slots that overlap the window
+            slot_start = (ws // step_minutes) * step_minutes
+            while slot_start < we:
+                slot_s = slot_start
+                slot_e = min(slot_s + step_minutes, 24 * 60)
+                slot_start += step_minutes
                 if slot_e <= ws or slot_s >= we:
                     continue
                 on = []
@@ -438,31 +445,122 @@ def validate_group_coverage_from_availability(
                             break
                 staffed = len(on)
                 shortage = max(0, min_staff - staffed)
-                if shortage > 0:
-                    rows.append(
-                        {
-                            "date": date_key,
-                            "hour": f"{hour:02d}:00",
-                            "required": min_staff,
-                            "staffed": staffed,
-                            "shortage": shortage,
-                            "on_duty": "、".join(on),
-                            "window": f"{day_type} {start_s}-{end_s}",
-                        }
-                    )
+                all_rows.append(
+                    {
+                        "date": date_key,
+                        "time": _format_minutes_to_hhmm(slot_s),
+                        "required": min_staff,
+                        "staffed": staffed,
+                        "shortage": shortage,
+                        "on_duty": "、".join(on),
+                        "window": f"{day_type} {start_s}-{end_s}",
+                    }
+                )
 
-    deficits_df = pd.DataFrame(rows)
+    all_checked_df = pd.DataFrame(all_rows)
+    if all_checked_df.empty:
+        summary_df = pd.DataFrame(columns=["date", "shortage_units", "total_shortage"])
+        deficits_df = pd.DataFrame(columns=["date", "time", "required", "staffed", "shortage", "on_duty", "window"])
+        return summary_df, deficits_df, all_checked_df
+
+    # De-duplicate overlaps: per date/time keep max(required); staffed is identical; recompute shortage
+    all_checked_df["required"] = pd.to_numeric(all_checked_df["required"], errors="coerce").fillna(0).astype(int)
+    all_checked_df["staffed"] = pd.to_numeric(all_checked_df["staffed"], errors="coerce").fillna(0).astype(int)
+    all_checked_df = (
+        all_checked_df.groupby(["date", "time"], as_index=False)
+        .agg(
+            required=("required", "max"),
+            staffed=("staffed", "max"),
+            shortage=("shortage", "max"),
+            on_duty=("on_duty", lambda x: next((s for s in x if str(s).strip()), "")),
+            window=("window", lambda x: " | ".join(sorted(set([str(s) for s in x if str(s).strip()])))),
+        )
+    )
+    all_checked_df["shortage"] = (all_checked_df["required"] - all_checked_df["staffed"]).clip(lower=0)
+
+    deficits_df = all_checked_df[all_checked_df["shortage"] > 0].copy()
     if deficits_df.empty:
-        summary_df = pd.DataFrame(columns=["date", "shortage_hours", "total_shortage"])
-        return summary_df, deficits_df
+        summary_df = pd.DataFrame(columns=["date", "shortage_units", "total_shortage"])
+        return summary_df, deficits_df, all_checked_df
 
     summary_df = (
         deficits_df.groupby("date")
-        .agg(shortage_hours=("shortage", "count"), total_shortage=("shortage", "sum"))
+        .agg(shortage_units=("shortage", "count"), total_shortage=("shortage", "sum"))
         .reset_index()
-        .sort_values(["total_shortage", "shortage_hours"], ascending=False)
+        .sort_values(["total_shortage", "shortage_units"], ascending=False)
     )
-    return summary_df, deficits_df
+    return summary_df, deficits_df, all_checked_df
+
+
+def _build_group_coverage_heatmap_df(all_checked_df: pd.DataFrame, step_minutes: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build a Mon-Sun x time-slots table with deficit rate (0..1) and checked counts.
+    Cells outside validated windows are NaN.
+    Returns (rate_df, count_df).
+    """
+    if all_checked_df is None or all_checked_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    try:
+        step_minutes = int(step_minutes)
+    except Exception:
+        step_minutes = 30
+    if step_minutes <= 0:
+        step_minutes = 30
+
+    df = all_checked_df.copy()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date_dt"])
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df["weekday"] = df["date_dt"].dt.dayofweek  # Mon=0..Sun=6
+    df["is_deficit"] = (pd.to_numeric(df["shortage"], errors="coerce").fillna(0) > 0).astype(int)
+
+    agg = (
+        df.groupby(["weekday", "time"], as_index=False)
+        .agg(checked=("is_deficit", "count"), deficit=("is_deficit", "sum"))
+    )
+    agg["rate"] = agg["deficit"] / agg["checked"]
+
+    time_slots = [t for t in _time_options(step_minutes) if t != "24:00"]
+    col_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    rate_df = pd.DataFrame(index=time_slots, columns=col_names, data=float("nan"))
+    count_df = pd.DataFrame(index=time_slots, columns=col_names, data=float("nan"))
+
+    wd_to_col = {0: "周一", 1: "周二", 2: "周三", 3: "周四", 4: "周五", 5: "周六", 6: "周日"}
+    for _, r in agg.iterrows():
+        col = wd_to_col.get(int(r["weekday"]))
+        t = str(r["time"])
+        if col in rate_df.columns and t in rate_df.index:
+            rate_df.loc[t, col] = float(r["rate"])
+            count_df.loc[t, col] = int(r["checked"])
+
+    return rate_df, count_df
+
+
+def _heatmap_style_from_rate(v: Any) -> str:
+    """
+    Rate heatmap cell style:
+    - NaN: gray (not applicable)
+    - 0: green-ish (OK)
+    - 1: red-ish (deficit)
+    """
+    try:
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "background-color: #f3f4f6; color: #9ca3af;"
+        x = float(v)
+    except Exception:
+        return "background-color: #f3f4f6; color: #9ca3af;"
+
+    x = max(0.0, min(1.0, x))
+    # interpolate between light green and light red
+    g0 = (217, 242, 217)  # ok
+    r1 = (248, 215, 218)  # deficit
+    rr = int(g0[0] + (r1[0] - g0[0]) * x)
+    gg = int(g0[1] + (r1[1] - g0[1]) * x)
+    bb = int(g0[2] + (r1[2] - g0[2]) * x)
+    return f"background-color: rgb({rr},{gg},{bb}); color: #111827;"
 
 
 # -----------------------------
@@ -1207,30 +1305,78 @@ with st.expander("自定义更表规则（小组）"):
     else:
         name_to_group2 = {g.get("name"): g for g in groups if g.get("name")}
         sel_name = st.selectbox("选择要验证的小组", options=list(name_to_group2.keys()), key="validate_group_name")
-        only_deficits = st.checkbox("只显示有缺口的小时", value=True, key="validate_only_deficits")
+        view_mode = st.radio(
+            "展示方式",
+            options=["热力网格（推荐）", "按日期汇总", "明细列表"],
+            horizontal=True,
+            key="validate_group_view_mode",
+        )
+        only_deficits = st.checkbox("明细仅显示缺口", value=True, key="validate_only_deficits")
         if st.button("开始验证", type="primary", key="run_validate_group"):
             gsel = name_to_group2.get(sel_name)
             if not gsel:
                 st.error("未选择有效小组。")
             else:
-                with st.spinner("正在按小时校验覆盖..."):
-                    summary_df, deficits_df = validate_group_coverage_from_availability(
+                with st.spinner("正在按 30 分钟时段校验覆盖..."):
+                    summary_df, deficits_df, all_checked_df = validate_group_coverage_from_availability(
                         st.session_state.availability, gsel
                     )
-                if deficits_df.empty:
-                    st.success(f"✅ 小组「{sel_name}」在当前总表日期范围内：所有规则段均满足（无缺口）。")
+                has_deficit = not deficits_df.empty
+                if has_deficit:
+                    approx_hours = len(deficits_df) * 0.5
+                    st.warning(
+                        f"⚠️ 小组「{sel_name}」存在缺口时段（30min/格）：{len(deficits_df)} 条（约 {approx_hours:.1f} 小时）"
+                    )
                 else:
-                    st.warning(f"⚠️ 小组「{sel_name}」存在缺口小时：{len(deficits_df)} 条")
-                    st.dataframe(summary_df, width="stretch", height=220)
-                    if only_deficits:
-                        st.dataframe(deficits_df, width="stretch", height=420)
+                    st.success(f"✅ 小组「{sel_name}」在当前总表日期范围内：所有规则段均满足（无缺口）。")
+
+                # Heatmap view
+                if view_mode == "热力网格（推荐）":
+                    rate_df, count_df = _build_group_coverage_heatmap_df(all_checked_df, step_minutes=30)
+                    if rate_df.empty:
+                        st.info("暂无可视化数据（可能规则段为空或日期解析失败）。")
                     else:
-                        st.dataframe(deficits_df, width="stretch", height=420)
+                        # Show % values; gray means not in any validated window for that weekday/time
+                        styled = rate_df.style.applymap(_heatmap_style_from_rate).format(
+                            lambda x: "" if pd.isna(x) else f"{x*100:.0f}%"
+                        )
+                        st.caption("颜色含义：绿色=缺口率 0%（完全满足）；红色越深=缺口率越高；灰色=该周几/时段不在规则覆盖范围。")
+                        st.dataframe(styled, width="stretch", height=720)
+                        with st.expander("查看每格样本量（该周几/时段被校验的次数）", expanded=False):
+                            st.dataframe(count_df.fillna("").astype(str), width="stretch", height=480)
+
+                    with st.expander("明细（可选）", expanded=False):
+                        if only_deficits:
+                            if has_deficit:
+                                st.dataframe(deficits_df, width="stretch", height=420)
+                            else:
+                                st.caption("无缺口。")
+                        else:
+                            st.dataframe(all_checked_df, width="stretch", height=420)
+
+                elif view_mode == "按日期汇总":
+                    st.dataframe(summary_df, width="stretch", height=260)
+                    with st.expander("明细（可选）", expanded=False):
+                        if only_deficits:
+                            if has_deficit:
+                                st.dataframe(deficits_df, width="stretch", height=420)
+                            else:
+                                st.caption("无缺口。")
+                        else:
+                            st.dataframe(all_checked_df, width="stretch", height=420)
+                else:
+                    if only_deficits:
+                        if has_deficit:
+                            st.dataframe(deficits_df, width="stretch", height=520)
+                        else:
+                            st.caption("无缺口。")
+                    else:
+                        st.dataframe(all_checked_df, width="stretch", height=520)
 
         # Explicit save hint for imported availability
         st.caption("提示：侧边栏导入总表只会更新本次会话内的数据；如需写入 Firebase，请点击侧边栏的 “Save All Changes”。")
 
-    st.caption("说明：小组规则用于校验排班是否满足“某时段最少需要多少人值更”。目前按“小时”进行覆盖校验。")
+    st.caption("说明：小组规则用于校验排班是否满足“某时段最少需要多少人值更”。此处按“30 分钟时段”进行覆盖校验与可视化。")
 
     # Overview
     if groups:
