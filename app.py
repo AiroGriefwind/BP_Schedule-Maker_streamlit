@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import json
 import uuid
@@ -45,6 +45,12 @@ except Exception:
 
 import firebase_manager as fm
 fm.initialize_firebase()
+
+# Optional: Altair for clickable heatmap (fallback if not available)
+try:
+    import altair as alt  # type: ignore
+except Exception:
+    alt = None  # type: ignore
 
 # --- Main App ---
 def _safe_get_secret(key: str) -> Optional[str]:
@@ -563,6 +569,156 @@ def _heatmap_style_from_rate(v: Any) -> str:
     return f"background-color: rgb({rr},{gg},{bb}); color: #111827;"
 
 
+def _build_week_bins_from_dates(date_keys: List[str]) -> List[Dict[str, Any]]:
+    """
+    Build calendar 7-day bins from min(date_keys) to max(date_keys).
+    Only include bins that contain at least 1 imported date.
+    Each bin is: {start_date, end_date, label, dates_in_bin}
+    """
+    dts = sorted([pd.to_datetime(x, errors="coerce") for x in (date_keys or []) if str(x).strip()])
+    dts = [x for x in dts if pd.notna(x)]
+    if not dts:
+        return []
+    min_d = dts[0].date()
+    max_d = dts[-1].date()
+    have = set([x.date() for x in dts])
+    bins: List[Dict[str, Any]] = []
+    cur = min_d
+    while cur <= max_d:
+        end = min(cur + timedelta(days=6), max_d)
+        dates_in = [cur + timedelta(days=i) for i in range((end - cur).days + 1) if (cur + timedelta(days=i)) in have]
+        if dates_in:
+            label = f"{cur.isoformat()} ~ {end.isoformat()}（{(end - cur).days + 1}天，含{len(dates_in)}天数据）"
+            bins.append(
+                {
+                    "start_date": cur,
+                    "end_date": end,
+                    "label": label,
+                    "dates_in_bin": [d.isoformat() for d in dates_in],
+                }
+            )
+        cur = cur + timedelta(days=7)
+    return bins
+
+
+def _build_week_grid_df(
+    *,
+    all_checked_df: pd.DataFrame,
+    week_start: datetime.date,
+    week_end: datetime.date,
+    step_minutes: int = 30,
+) -> pd.DataFrame:
+    """
+    Build a 7-day (calendar) grid for Altair:
+    rows: time slots; cols: weekday; each cell maps to a specific date in [week_start, week_end].
+    """
+    try:
+        step_minutes = int(step_minutes)
+    except Exception:
+        step_minutes = 30
+    if step_minutes <= 0:
+        step_minutes = 30
+
+    if all_checked_df is None or all_checked_df.empty:
+        return pd.DataFrame()
+
+    df = all_checked_df.copy()
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date_dt"])
+    if df.empty:
+        return pd.DataFrame()
+    df["date_only"] = df["date_dt"].dt.date
+
+    # filter to this week range
+    df = df[(df["date_only"] >= week_start) & (df["date_only"] <= week_end)]
+
+    # quick lookup
+    lookup: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for _, r in df.iterrows():
+        dk = r.get("date")
+        tm = r.get("time")
+        if dk is None or tm is None:
+            continue
+        lookup[(str(dk), str(tm))] = {
+            "required": int(r.get("required") or 0),
+            "staffed": int(r.get("staffed") or 0),
+            "shortage": int(r.get("shortage") or 0),
+        }
+
+    day_labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    wd_to_label = {0: "周一", 1: "周二", 2: "周三", 3: "周四", 4: "周五", 5: "周六", 6: "周日"}
+    time_slots = [t for t in _time_options(step_minutes) if t != "24:00"]
+
+    rows: List[Dict[str, Any]] = []
+    cur = week_start
+    while cur <= week_end:
+        dk = cur.isoformat()
+        wd = cur.weekday()
+        wlabel = wd_to_label.get(wd, "")
+        for t in time_slots:
+            rec = lookup.get((dk, t))
+            if rec is None:
+                rows.append(
+                    {
+                        "date": dk,
+                        "weekday": wlabel,
+                        "time": t,
+                        "status": "na",
+                        "required": None,
+                        "staffed": None,
+                        "shortage": None,
+                    }
+                )
+            else:
+                shortage = int(rec.get("shortage") or 0)
+                rows.append(
+                    {
+                        "date": dk,
+                        "weekday": wlabel,
+                        "time": t,
+                        "status": "deficit" if shortage > 0 else "ok",
+                        "required": int(rec.get("required") or 0),
+                        "staffed": int(rec.get("staffed") or 0),
+                        "shortage": shortage,
+                    }
+                )
+        cur = cur + timedelta(days=1)
+
+    out = pd.DataFrame(rows)
+    # ensure all weekdays appear in axis
+    out["weekday"] = pd.Categorical(out["weekday"], categories=day_labels, ordered=True)
+    return out
+
+
+def _extract_date_time_from_obj(obj: Any) -> Optional[Tuple[str, str]]:
+    """
+    Best-effort extraction of (date, time) from Streamlit chart selection payloads.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        if "date" in obj and "time" in obj:
+            return (str(obj["date"]), str(obj["time"]))
+        for v in obj.values():
+            got = _extract_date_time_from_obj(v)
+            if got:
+                return got
+    if isinstance(obj, list):
+        for it in obj:
+            got = _extract_date_time_from_obj(it)
+            if got:
+                return got
+    # some objects expose .selection
+    try:
+        sel = getattr(obj, "selection", None)
+        got = _extract_date_time_from_obj(sel)
+        if got:
+            return got
+    except Exception:
+        pass
+    return None
+
+
 def _is_leave_like_raw(v: Any) -> bool:
     """
     Heuristic: treat non-shift, short alpha codes as leave (AL/SL/CL/...
@@ -670,24 +826,23 @@ def _build_cell_member_detail_df(
             current_priority=current_priority,
         )
 
-        if on_duty:
+        # Leave-like raw values first (AL/SL/...)
+        if _is_leave_like_raw(raw_s) and not intervals:
+            status = "请假"
+            detail = f"（{raw_s}）"
+        # Then conflict (higher priority group) overrides "到岗"
+        elif conflict_group:
+            status = "无优先级"
+            if raw_s.strip():
+                detail = f"（{raw_s}，{conflict_group}）"
+            else:
+                detail = f"（空，{conflict_group}）"
+        elif on_duty:
             status = "到岗"
             detail = f"（{raw_s}）" if raw_s.strip() else "（空）"
         else:
-            # Leave-like raw values first (AL/SL/...)
-            if _is_leave_like_raw(raw_s) and not intervals:
-                status = "请假"
-                detail = f"（{raw_s}）"
-            elif conflict_group:
-                status = "无优先级"
-                # keep raw verbatim + conflict group hint
-                if raw_s.strip():
-                    detail = f"（{raw_s}，{conflict_group}）"
-                else:
-                    detail = f"（空，{conflict_group}）"
-            else:
-                status = "未到岗"
-                detail = f"（{raw_s}）" if raw_s.strip() else "（空）"
+            status = "未到岗"
+            detail = f"（{raw_s}）" if raw_s.strip() else "（空）"
 
         rows.append({"成员": m, "状态": status, "明细": detail})
 
@@ -1436,13 +1591,7 @@ with st.expander("自定义更表规则（小组）"):
     else:
         name_to_group2 = {g.get("name"): g for g in groups if g.get("name")}
         sel_name = st.selectbox("选择要验证的小组", options=list(name_to_group2.keys()), key="validate_group_name")
-        view_mode = st.radio(
-            "展示方式",
-            options=["热力网格（推荐）", "按日期汇总", "明细列表"],
-            horizontal=True,
-            key="validate_group_view_mode",
-        )
-        only_deficits = st.checkbox("明细仅显示缺口", value=True, key="validate_only_deficits")
+        # UI simplified: week selector + clickable grid + always-on detail panel
         gsel = name_to_group2.get(sel_name)
 
         # Persist last validation result in session_state so widget interactions won't wipe the UI.
@@ -1454,12 +1603,23 @@ with st.expander("自定义更表规则（小组）"):
                     summary_df, deficits_df, all_checked_df = validate_group_coverage_from_availability(
                         st.session_state.availability, gsel
                     )
+                # Build week bins from imported dates
+                date_keys = []
+                try:
+                    date_keys = sorted(list(set([str(x) for x in all_checked_df.get("date", []).tolist()])))
+                except Exception:
+                    date_keys = sorted(list(set([str(x) for x in (st.session_state.availability or {}).keys()])))
+                week_bins = _build_week_bins_from_dates(date_keys)
+                # Default to first bin
+                if week_bins:
+                    st.session_state["validate_week_bin_idx"] = 0
                 st.session_state["_validate_group_last_result"] = {
                     "group_name": sel_name,
                     "step_minutes": 30,
                     "summary_df": summary_df,
                     "deficits_df": deficits_df,
                     "all_checked_df": all_checked_df,
+                    "week_bins": week_bins,
                     "computed_at": datetime.now().isoformat(timespec="seconds"),
                 }
 
@@ -1474,6 +1634,7 @@ with st.expander("自定义更表规则（小组）"):
             deficits_df = last.get("deficits_df")
             all_checked_df = last.get("all_checked_df")
             step_minutes = int(last.get("step_minutes") or 30)
+            week_bins = last.get("week_bins") or []
 
             # Defensive: ensure dataframes exist
             if not isinstance(all_checked_df, pd.DataFrame) or all_checked_df.empty:
@@ -1488,95 +1649,131 @@ with st.expander("自定义更表规则（小组）"):
                 else:
                     st.success(f"✅ 小组「{sel_name}」在当前总表日期范围内：所有规则段均满足（无缺口）。")
 
-                # Heatmap view
-                if view_mode == "热力网格（推荐）":
-                    rate_df, count_df = _build_group_coverage_heatmap_df(all_checked_df, step_minutes=step_minutes)
-                    if rate_df.empty:
-                        st.info("暂无可视化数据（可能规则段为空或日期解析失败）。")
-                    else:
-                        styled = rate_df.style.applymap(_heatmap_style_from_rate).format(
-                            lambda x: "" if pd.isna(x) else f"{x*100:.0f}%"
-                        )
-                        st.caption("颜色含义：绿色=缺口率 0%（完全满足）；红色越深=缺口率越高；灰色=该周几/时段不在规则覆盖范围。")
-                        st.dataframe(styled, width="stretch", height=720)
-                        with st.expander("查看每格样本量（该周几/时段被校验的次数）", expanded=False):
-                            st.dataframe(count_df.fillna("").astype(str), width="stretch", height=480)
-
-                    # --- cell detail (interactive) ---
-                    with st.expander("单格明细（实验：选一个周几+时间格，然后点“明细”）", expanded=False):
-                        day_cols = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-                        c1, c2, c3 = st.columns([1, 1, 2])
-                        with c1:
-                            sel_day = st.selectbox("周几", options=day_cols, key="heatmap_sel_day")
-                        with c2:
-                            sel_time = st.selectbox(
-                                "时间格（30min）",
-                                options=list(rate_df.index) if isinstance(rate_df, pd.DataFrame) and (not rate_df.empty) else _TIME_OPTIONS_BASE[:-1],
-                                key="heatmap_sel_time",
-                            )
-
-                        wd_map = {"周一": 0, "周二": 1, "周三": 2, "周四": 3, "周五": 4, "周六": 5, "周日": 6}
-                        want_wd = wd_map.get(sel_day, 0)
-                        cand = all_checked_df.copy()
-                        cand["date_dt"] = pd.to_datetime(cand["date"], errors="coerce")
-                        cand = cand.dropna(subset=["date_dt"])
-                        cand = cand[(cand["time"] == sel_time) & (cand["date_dt"].dt.dayofweek == want_wd)]
-                        if cand.empty:
-                            with c3:
-                                st.caption("该周几/时间格在导入的日期范围内没有被校验到（可能不在规则覆盖范围）。")
-                        else:
-                            cand = cand.sort_values(["shortage", "date"], ascending=[False, True])
-                            date_opts = list(dict.fromkeys([str(x) for x in cand["date"].tolist()]))
-                            with c3:
-                                sel_date = st.selectbox("选择日期（同一周几/时间格可能有多天）", options=date_opts, key="heatmap_sel_date")
-
-                            row = cand[cand["date"] == sel_date].head(1)
-                            if not row.empty:
-                                r0 = row.iloc[0].to_dict()
-                                st.caption(
-                                    f"该格校验结果：required={int(r0.get('required') or 0)} / staffed={int(r0.get('staffed') or 0)} / shortage={int(r0.get('shortage') or 0)}"
-                                )
-
-                            with st.popover("明细"):
-                                detail_df = _build_cell_member_detail_df(
-                                    availability=st.session_state.availability,
-                                    group=gsel,
-                                    group_rules=st.session_state.get("group_rules") or GROUP_RULES,
-                                    date_key=sel_date,
-                                    time_hhmm=sel_time,
-                                    step_minutes=step_minutes,
-                                )
-                                st.dataframe(detail_df, width="stretch", height=240)
-                                st.caption("括号内为导入总表该日期该员工格子的原始内容；“无优先级”代表被更高 priority 的其他小组规则占用（预留接口）。")
-
-                    with st.expander("明细（可选）", expanded=False):
-                        if only_deficits:
-                            if has_deficit:
-                                st.dataframe(deficits_df, width="stretch", height=420)
-                            else:
-                                st.caption("无缺口。")
-                        else:
-                            st.dataframe(all_checked_df, width="stretch", height=420)
-
-                elif view_mode == "按日期汇总":
-                    if isinstance(summary_df, pd.DataFrame):
-                        st.dataframe(summary_df, width="stretch", height=260)
-                    with st.expander("明细（可选）", expanded=False):
-                        if only_deficits:
-                            if has_deficit:
-                                st.dataframe(deficits_df, width="stretch", height=420)
-                            else:
-                                st.caption("无缺口。")
-                        else:
-                            st.dataframe(all_checked_df, width="stretch", height=420)
+                if not week_bins:
+                    st.info("无法生成周分段（日期解析失败或导入日期为空）。")
                 else:
-                    if only_deficits:
-                        if has_deficit:
-                            st.dataframe(deficits_df, width="stretch", height=520)
-                        else:
-                            st.caption("无缺口。")
+                    labels = [b.get("label") for b in week_bins]
+                    idx = st.selectbox(
+                        "选择时间范围（每 7 天一段）",
+                        options=list(range(len(labels))),
+                        format_func=lambda i: labels[i],
+                        key="validate_week_bin_idx",
+                    )
+                    wb = week_bins[int(idx)]
+                    week_start = datetime.fromisoformat(str(wb["start_date"])).date() if isinstance(wb.get("start_date"), str) else wb.get("start_date")
+                    week_end = datetime.fromisoformat(str(wb["end_date"])).date() if isinstance(wb.get("end_date"), str) else wb.get("end_date")
+
+                    grid_df = _build_week_grid_df(
+                        all_checked_df=all_checked_df,
+                        week_start=week_start,
+                        week_end=week_end,
+                        step_minutes=step_minutes,
+                    )
+
+                    # default selected cell within this week (first deficit -> first ok -> first)
+                    def _pick_default_cell() -> Tuple[str, str]:
+                        sub = grid_df[grid_df["status"] != "na"].copy()
+                        if sub.empty:
+                            return (week_start.isoformat(), "00:00")
+                        d1 = sub[sub["status"] == "deficit"]
+                        if not d1.empty:
+                            r = d1.iloc[0]
+                            return (str(r["date"]), str(r["time"]))
+                        r = sub.iloc[0]
+                        return (str(r["date"]), str(r["time"]))
+
+                    cur_sel = st.session_state.get("_validate_selected_cell")
+                    if not isinstance(cur_sel, dict):
+                        cur_sel = {}
+                    sel_date = str(cur_sel.get("date") or "")
+                    sel_time = str(cur_sel.get("time") or "")
+                    in_week = False
+                    try:
+                        sd = datetime.fromisoformat(sel_date).date()
+                        in_week = (sd >= week_start) and (sd <= week_end)
+                    except Exception:
+                        in_week = False
+                    if (not in_week) or (not sel_time):
+                        d0, t0 = _pick_default_cell()
+                        st.session_state["_validate_selected_cell"] = {"date": d0, "time": t0}
+                        sel_date, sel_time = d0, t0
+
+                    # Render clickable chart if Altair is available; otherwise fallback table.
+                    st.caption("点击热力图任意一格，下方明细会自动切换到该格对应的日期+时间。")
+                    if alt is not None and not grid_df.empty:
+                        sel_param = alt.selection_point(fields=["date", "time"], on="click", empty=False, name="cell")
+                        chart = (
+                            alt.Chart(grid_df)
+                            .mark_rect()
+                            .encode(
+                                x=alt.X("weekday:N", sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"], title=None),
+                                y=alt.Y("time:N", sort=sorted(grid_df["time"].unique(), reverse=True), title=None),
+                                color=alt.Color(
+                                    "status:N",
+                                    scale=alt.Scale(domain=["na", "ok", "deficit"], range=["#f3f4f6", "#d9f2d9", "#f8d7da"]),
+                                    legend=None,
+                                ),
+                                tooltip=[
+                                    alt.Tooltip("date:N", title="日期"),
+                                    alt.Tooltip("weekday:N", title="周几"),
+                                    alt.Tooltip("time:N", title="时间格"),
+                                    alt.Tooltip("required:Q", title="required"),
+                                    alt.Tooltip("staffed:Q", title="staffed"),
+                                    alt.Tooltip("shortage:Q", title="shortage"),
+                                ],
+                            )
+                            .add_params(sel_param)
+                            .properties(height=720)
+                        )
+                        # attempt to get selection payload from Streamlit (version-dependent)
+                        try:
+                            evt = st.altair_chart(chart, use_container_width=True, on_select="rerun", key="validate_group_week_heatmap")
+                            got = _extract_date_time_from_obj(evt)
+                            if got:
+                                st.session_state["_validate_selected_cell"] = {"date": got[0], "time": got[1]}
+                                sel_date, sel_time = got[0], got[1]
+                        except TypeError:
+                            # older Streamlit: no on_select support
+                            st.altair_chart(chart, use_container_width=True)
                     else:
-                        st.dataframe(all_checked_df, width="stretch", height=520)
+                        # fallback
+                        st.dataframe(
+                            grid_df.pivot_table(index="time", columns="weekday", values="status", aggfunc="first"),
+                            width="stretch",
+                            height=720,
+                        )
+                        st.caption("提示：当前环境不支持点击热力图取值（Altair 或 on_select 不可用）。如需联动，请升级 Streamlit 或安装 Altair。")
+
+                    # Detail panel (always visible)
+                    st.subheader("明细")
+                    st.caption(f"当前选择：{sel_date} {sel_time}（{step_minutes}min/格）")
+                    row0 = None
+                    try:
+                        row0 = all_checked_df[(all_checked_df["date"] == sel_date) & (all_checked_df["time"] == sel_time)].head(1)
+                    except Exception:
+                        row0 = None
+                    if isinstance(row0, pd.DataFrame) and (not row0.empty):
+                        r0 = row0.iloc[0].to_dict()
+                        st.caption(
+                            f"该格校验结果：required={int(r0.get('required') or 0)} / staffed={int(r0.get('staffed') or 0)} / shortage={int(r0.get('shortage') or 0)}"
+                        )
+                    detail_df = _build_cell_member_detail_df(
+                        availability=st.session_state.availability,
+                        group=gsel,
+                        group_rules=st.session_state.get("group_rules") or GROUP_RULES,
+                        date_key=sel_date,
+                        time_hhmm=sel_time,
+                        step_minutes=step_minutes,
+                    )
+                    st.dataframe(detail_df, width="stretch", height=320)
+
+                    with st.expander("高级：查看缺口明细/按日期汇总", expanded=False):
+                        if isinstance(summary_df, pd.DataFrame):
+                            st.markdown("**按日期汇总**")
+                            st.dataframe(summary_df, width="stretch", height=220)
+                        if isinstance(deficits_df, pd.DataFrame):
+                            st.markdown("**缺口明细（仅缺口）**")
+                            st.dataframe(deficits_df, width="stretch", height=360)
 
         # Explicit save hint for imported availability
         st.caption("提示：侧边栏导入总表只会更新本次会话内的数据；如需写入 Firebase，请点击侧边栏的 “Save All Changes”。")
