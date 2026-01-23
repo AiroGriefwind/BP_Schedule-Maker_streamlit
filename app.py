@@ -393,6 +393,7 @@ def _time_window_to_minutes(start: str, end: str) -> Tuple[int, int]:
 def validate_group_coverage_from_availability(
     availability: Dict[str, Dict[str, Any]],
     group: Dict[str, Any],
+    step_minutes: int = 60,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Return (summary_df, deficits_df, all_checked_df).
@@ -414,8 +415,13 @@ def validate_group_coverage_from_availability(
             cell = emps.get(m)
             parsed[date_key][m] = _intervals_from_cell(cell)
 
-    # Default to 30-minute granularity for UI visualization; callers can ignore the extra resolution.
-    step_minutes = 30
+    # Default to 60-minute granularity for UI visualization.
+    try:
+        step_minutes = int(step_minutes)
+    except Exception:
+        step_minutes = 60
+    if step_minutes <= 0:
+        step_minutes = 60
     all_rows: List[Dict[str, Any]] = []
     for date_key in sorted(parsed.keys()):
         try:
@@ -510,9 +516,9 @@ def _build_group_coverage_heatmap_df(all_checked_df: pd.DataFrame, step_minutes:
     try:
         step_minutes = int(step_minutes)
     except Exception:
-        step_minutes = 30
+        step_minutes = 60
     if step_minutes <= 0:
-        step_minutes = 30
+        step_minutes = 60
 
     df = all_checked_df.copy()
     df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
@@ -615,9 +621,9 @@ def _build_week_grid_df(
     try:
         step_minutes = int(step_minutes)
     except Exception:
-        step_minutes = 30
+        step_minutes = 60
     if step_minutes <= 0:
-        step_minutes = 30
+        step_minutes = 60
 
     if all_checked_df is None or all_checked_df.empty:
         return pd.DataFrame()
@@ -790,7 +796,7 @@ def _build_cell_member_detail_df(
     group_rules: Dict[str, Any],
     date_key: str,
     time_hhmm: str,
-    step_minutes: int = 30,
+    step_minutes: int = 60,
 ) -> pd.DataFrame:
     """
     Build per-member status table for a specific (date, time slot).
@@ -812,7 +818,7 @@ def _build_cell_member_detail_df(
     rows: List[Dict[str, Any]] = []
     for m in members:
         raw = emps.get(m)
-        raw_s = "" if raw is None else str(raw)
+        raw_s = _normalize_cell_str(raw)
         intervals = _intervals_from_cell(raw)
         on_duty = any(max(is0, slot_s) < min(ie0, slot_e) for is0, ie0 in intervals)
 
@@ -829,20 +835,20 @@ def _build_cell_member_detail_df(
         # Leave-like raw values first (AL/SL/...)
         if _is_leave_like_raw(raw_s) and not intervals:
             status = "请假"
-            detail = f"（{raw_s}）"
+            detail = f"{raw_s}" if raw_s else ""
         # Then conflict (higher priority group) overrides "到岗"
         elif conflict_group:
             status = "无优先级"
-            if raw_s.strip():
-                detail = f"（{raw_s}，{conflict_group}）"
+            if raw_s:
+                detail = f"{raw_s}（{conflict_group}）"
             else:
                 detail = f"（空，{conflict_group}）"
         elif on_duty:
             status = "到岗"
-            detail = f"（{raw_s}）" if raw_s.strip() else "（空）"
+            detail = raw_s if raw_s else ""
         else:
             status = "未到岗"
-            detail = f"（{raw_s}）" if raw_s.strip() else "（空）"
+            detail = raw_s if raw_s else ""
 
         rows.append({"成员": m, "状态": status, "明细": detail})
 
@@ -1599,9 +1605,9 @@ with st.expander("自定义更表规则（小组）"):
             if not gsel:
                 st.error("未选择有效小组。")
             else:
-                with st.spinner("正在按 30 分钟时段校验覆盖..."):
+                with st.spinner("正在按 60 分钟时段校验覆盖..."):
                     summary_df, deficits_df, all_checked_df = validate_group_coverage_from_availability(
-                        st.session_state.availability, gsel
+                        st.session_state.availability, gsel, step_minutes=60
                     )
                 # Build week bins from imported dates
                 date_keys = []
@@ -1615,7 +1621,7 @@ with st.expander("自定义更表规则（小组）"):
                     st.session_state["validate_week_bin_idx"] = 0
                 st.session_state["_validate_group_last_result"] = {
                     "group_name": sel_name,
-                    "step_minutes": 30,
+                    "step_minutes": 60,
                     "summary_df": summary_df,
                     "deficits_df": deficits_df,
                     "all_checked_df": all_checked_df,
@@ -1765,7 +1771,41 @@ with st.expander("自定义更表规则（小组）"):
                         time_hhmm=sel_time,
                         step_minutes=step_minutes,
                     )
-                    st.dataframe(detail_df, width="stretch", height=320)
+                    # Render detail with availability-style colors (DataFrame / Styler)
+                    try:
+                        cell_map = (st.session_state.availability or {}).get(sel_date, {}) or {}
+                    except Exception:
+                        cell_map = {}
+
+                    def _status_css(s: Any) -> str:
+                        v = str(s or "")
+                        if v == "到岗":
+                            return "background-color: #d9f2d9; color: #111827;"
+                        if v == "未到岗":
+                            return "background-color: #f8d7da; color: #111827;"
+                        if v == "请假":
+                            return "background-color: #fff3cd; color: #111827;"
+                        if v == "无优先级":
+                            return "background-color: #e2e8f0; color: #111827;"
+                        return ""
+
+                    def _raw_css_for_member(member: Any) -> str:
+                        try:
+                            cell = cell_map.get(str(member))
+                        except Exception:
+                            cell = None
+                        return _availability_cell_css(cell)
+
+                    if isinstance(detail_df, pd.DataFrame) and (not detail_df.empty) and ("成员" in detail_df.columns):
+                        styler = detail_df.style
+                        if "状态" in detail_df.columns:
+                            styler = styler.applymap(_status_css, subset=["状态"])
+                        if "明细" in detail_df.columns:
+                            # colorize "明细" using the imported availability cell colors
+                            styler = styler.apply(lambda r: [_raw_css_for_member(r.get("成员"))], axis=1, subset=["明细"])
+                        st.dataframe(styler, width="stretch", height=320)
+                    else:
+                        st.dataframe(detail_df, width="stretch", height=320)
 
                     with st.expander("高级：查看缺口明细/按日期汇总", expanded=False):
                         if isinstance(summary_df, pd.DataFrame):
