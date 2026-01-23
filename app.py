@@ -412,13 +412,10 @@ def validate_group_coverage_from_availability(
             d = pd.to_datetime(date_key).to_pydatetime()
         except Exception:
             continue
-        is_weekend = d.weekday() >= 5
 
         for w in windows:
             day_type = str(w.get("day_type") or "all").strip().lower()
-            if day_type == "weekday" and is_weekend:
-                continue
-            if day_type == "weekend" and not is_weekend:
+            if not _day_type_applies_ui(day_type, d):
                 continue
             start_s = str(w.get("start") or "00:00")
             end_s = str(w.get("end") or "24:00")
@@ -466,6 +463,197 @@ def validate_group_coverage_from_availability(
         .sort_values(["total_shortage", "shortage_hours"], ascending=False)
     )
     return summary_df, deficits_df
+
+
+# -----------------------------
+# Group rules editor helpers
+# -----------------------------
+_DOW_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+# UI focuses on Mon-Sun (+ all). Backend remains compatible with weekday/weekend.
+_DAY_TYPE_OPTIONS_BASE = ["all"] + _DOW_KEYS + ["weekday", "weekend"]
+
+
+def _time_options(step_minutes: int = 30) -> List[str]:
+    opts: List[str] = []
+    m = 0
+    while m < 24 * 60:
+        h = m // 60
+        mm = m % 60
+        opts.append(f"{h:02d}:{mm:02d}")
+        m += step_minutes
+    opts.append("24:00")
+    return opts
+
+
+_TIME_OPTIONS_BASE = _time_options(30)
+
+
+def _format_minutes_to_hhmm(m: int) -> str:
+    if m == 1440:
+        return "24:00"
+    h = m // 60
+    mm = m % 60
+    return f"{h:02d}:{mm:02d}"
+
+
+def _normalize_time_str_ui(v: Any) -> str:
+    """
+    Normalize time strings to canonical "HH:MM" (or "24:00").
+    Accepts legacy formats like "0700", "7", "24", "2400", "09:30".
+    Returns "" if empty/None-like/invalid.
+    """
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if not s:
+        return ""
+    if s.lower() in {"none", "nan", "null"}:
+        return ""
+    m = _parse_time_to_minutes(s)
+    if m is None:
+        return ""
+    return _format_minutes_to_hhmm(int(m))
+
+
+def _normalize_windows_df_for_editor(df: pd.DataFrame) -> Tuple[pd.DataFrame, int]:
+    """
+    Prepare windows df for UI editor:
+    - normalize day_type to canonical keys
+    - normalize start/end to "HH:MM" / "24:00"
+    - drop rows with missing start/end (common garbage rows like "None")
+    Returns (new_df, dropped_rows_count)
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df, 0
+    out = df.copy()
+    dropped = 0
+
+    out["day_type"] = out.get("day_type", "all").apply(_normalize_day_type_ui)
+    out["start"] = out.get("start", "00:00").apply(_normalize_time_str_ui)
+    out["end"] = out.get("end", "24:00").apply(_normalize_time_str_ui)
+
+    # Drop rows where start/end missing after normalization
+    mask_keep = (out["start"].astype(str).str.strip() != "") & (out["end"].astype(str).str.strip() != "")
+    dropped = int((~mask_keep).sum())
+    out = out[mask_keep].reset_index(drop=True)
+
+    # Ensure min_staff is int-ish for display; keep as-is if conversion fails
+    if "min_staff" in out.columns:
+        def _to_int_or_keep(x):
+            try:
+                return int(x)
+            except Exception:
+                return x
+        out["min_staff"] = out["min_staff"].apply(_to_int_or_keep)
+
+    return out, dropped
+
+
+def _normalize_day_type_ui(v: Any) -> str:
+    s = str(v or "all").strip().lower()
+    if not s:
+        return "all"
+    if s in {"all", "weekday", "weekend"}:
+        return s
+    # allow Mon/Tue/Wed... or Monday/Tues...
+    s3 = s[:3]
+    if s3 in set(_DOW_KEYS):
+        return s3
+    # allow Chinese (best-effort)
+    zh = {
+        "周一": "mon",
+        "星期一": "mon",
+        "周二": "tue",
+        "星期二": "tue",
+        "周三": "wed",
+        "星期三": "wed",
+        "周四": "thu",
+        "星期四": "thu",
+        "周五": "fri",
+        "星期五": "fri",
+        "周六": "sat",
+        "星期六": "sat",
+        "周日": "sun",
+        "周天": "sun",
+        "星期日": "sun",
+        "星期天": "sun",
+        "每天": "all",
+        "全部": "all",
+        "工作日": "weekday",
+        "周末": "weekend",
+    }
+    return zh.get(str(v or "").strip(), "all")
+
+
+def _day_type_applies_ui(window_day_type: Any, date_obj: datetime) -> bool:
+    wd = _normalize_day_type_ui(window_day_type)
+    if wd == "all":
+        return True
+    dow = _DOW_KEYS[date_obj.weekday()]
+    if wd == dow:
+        return True
+    is_weekend = date_obj.weekday() >= 5
+    if wd == "weekday":
+        return not is_weekend
+    if wd == "weekend":
+        return is_weekend
+    return False
+
+
+def _validate_and_build_windows_df(win_df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """
+    Validate edited windows df and return (windows_list, errors_list).
+    windows_list is normalized to canonical keys (all/mon..sun/weekday/weekend).
+    """
+    errors: List[str] = []
+    windows: List[Dict[str, Any]] = []
+    if win_df is None or not isinstance(win_df, pd.DataFrame) or win_df.empty:
+        return windows, errors
+
+    for idx, r in win_df.iterrows():
+        raw_day = r.get("day_type", "all")
+        day_type = _normalize_day_type_ui(raw_day)
+        start = _normalize_time_str_ui(r.get("start", "00:00"))
+        end = _normalize_time_str_ui(r.get("end", "24:00"))
+
+        # Skip fully empty rows (Streamlit may keep a blank row for dynamic editor)
+        if (not str(raw_day).strip()) and (not start) and (not end) and (str(r.get("min_staff", "")).strip() == ""):
+            continue
+
+        if day_type not in set(_DAY_TYPE_OPTIONS_BASE):
+            errors.append(f"第 {idx + 1} 行：day_type 必须从下拉选项中选择。")
+
+        if not start or not end:
+            errors.append(f"第 {idx + 1} 行：start/end 不能为空（会自动忽略 None/空值行）。")
+            continue
+
+        sm = _parse_time_to_minutes(start)
+        em = _parse_time_to_minutes(end)
+        if sm is None or em is None:
+            errors.append(f"第 {idx + 1} 行：start/end 时间格式不合法。")
+            continue
+        sm = int(sm)
+        em = int(em)
+        if sm >= 1440:
+            errors.append(f"第 {idx + 1} 行：start 不能为 24:00。")
+        if (sm % 30) != 0:
+            errors.append(f"第 {idx + 1} 行：start 需为 30 分钟刻度（如 07:00 / 07:30）。")
+        if em != 1440 and (em % 30) != 0:
+            errors.append(f"第 {idx + 1} 行：end 需为 30 分钟刻度（如 16:00 / 16:30 / 24:00）。")
+        if em <= sm:
+            errors.append(f"第 {idx + 1} 行：end 必须大于 start。")
+
+        try:
+            min_staff = int(r.get("min_staff", 1))
+        except Exception:
+            min_staff = None
+        if min_staff is None or min_staff < 0:
+            errors.append(f"第 {idx + 1} 行：min_staff 必须是 ≥ 0 的整数。")
+            min_staff = 0
+
+        windows.append({"day_type": day_type, "start": start, "end": end, "min_staff": int(min_staff)})
+
+    return windows, errors
 
 def _availability_cell_css(cell):
     """Extract CSS style string from availability cell (background + text color)."""
@@ -894,6 +1082,55 @@ with st.expander("自定义更表规则（小组）"):
         st.warning("当前部署环境的 `scheduling_logic.py` 版本不包含小组规则功能（load_group_rules）。请确保已把最新代码部署/推送后再使用此功能。")
         st.stop()
 
+    # --- Import group_rules.json (dry-run preview; does NOT write to Firebase unless you click save) ---
+    st.markdown("**导入 group_rules.json（可选）**")
+    st.caption("选择文件后只会在本次会话中解析与预览，不会自动写入 Firebase。需要你点击“应用/保存”按钮才会生效。")
+    uploaded_group_rules = st.file_uploader(
+        "选择一个 group_rules.json（或 Firebase 的备份文件）",
+        type=["json"],
+        key="group_rules_import_uploader",
+    )
+    if uploaded_group_rules is not None:
+        try:
+            raw_text = uploaded_group_rules.getvalue().decode("utf-8", errors="ignore")
+            imported_obj = json.loads(raw_text)
+            # Best-effort normalize using scheduling_logic internal helper if available
+            try:
+                from scheduling_logic import _normalize_group_rules  # type: ignore
+                imported_obj = _normalize_group_rules(imported_obj)  # type: ignore[misc]
+            except Exception:
+                pass
+            st.session_state["_imported_group_rules_preview"] = imported_obj
+        except Exception as e:
+            st.session_state.pop("_imported_group_rules_preview", None)
+            st.error(f"导入失败：{e}")
+
+    preview_obj = st.session_state.get("_imported_group_rules_preview")
+    if isinstance(preview_obj, dict) and isinstance(preview_obj.get("groups", None), list):
+        groups_preview = preview_obj.get("groups") or []
+        st.success(f"已解析：{len(groups_preview)} 个小组。")
+        if groups_preview:
+            names = [g.get("name") for g in groups_preview if isinstance(g, dict) and g.get("name")]
+            if names:
+                st.caption("预览（前 12 个小组名）：" + "、".join([str(x) for x in names[:12]]))
+
+        import_cols = st.columns([1, 1, 2])
+        with import_cols[0]:
+            if st.button("应用到当前会话", type="secondary", key="apply_imported_group_rules"):
+                st.session_state.group_rules = preview_obj
+                st.toast("已应用导入的小组规则到当前会话（未写入 Firebase）。")
+                st.session_state.initialized = False
+                st.rerun()
+        with import_cols[1]:
+            if st.button("应用并保存到 Firebase", type="primary", key="apply_and_save_imported_group_rules"):
+                st.session_state.group_rules = preview_obj
+                save_group_rules(st.session_state.group_rules)
+                st.toast("✅ 已导入并保存到 Firebase。")
+                st.session_state.initialized = False
+                st.rerun()
+        with import_cols[2]:
+            st.caption("说明：保存时会进行 schema 规范化；无效规则段（如 start/end 为 None）不会写回。")
+
     def _reset_group_edit_widgets():
         """
         When switching the selected group, we must clear the edit widget keys.
@@ -1036,8 +1273,26 @@ with st.expander("自定义更表规则（小组）"):
         new_members = st.multiselect("成员（从现有员工中选择）", options=employee_names, default=[])
 
         st.markdown("规则段（可多段）：每一段表示在该时间窗内，每个小时至少需要多少名成员在岗。")
+        st.caption("day_type 建议：all=每天；mon..sun=周一..周日。start/end 为 30 分钟刻度，end 可选 24:00。")
         default_windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
-        win_df = st.data_editor(default_windows_df, num_rows="dynamic", width="stretch", key="new_group_windows")
+        # Include any existing values (if rerun keeps state) so editor won't blank them out,
+        # but validation will still require selections to be from base options.
+        day_opts = list(dict.fromkeys(_DAY_TYPE_OPTIONS_BASE + [str(x).strip().lower() for x in default_windows_df.get("day_type", []) if str(x).strip()]))
+        start_opts = list(dict.fromkeys(_TIME_OPTIONS_BASE + [str(x).strip() for x in default_windows_df.get("start", []) if str(x).strip()]))
+        end_opts = list(dict.fromkeys(_TIME_OPTIONS_BASE + [str(x).strip() for x in default_windows_df.get("end", []) if str(x).strip()]))
+        win_df = st.data_editor(
+            default_windows_df,
+            num_rows="dynamic",
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "day_type": st.column_config.SelectboxColumn("day_type", options=day_opts, required=True, help="all=每天；mon..sun=周一..周日（兼容 weekday/weekend）。"),
+                "start": st.column_config.SelectboxColumn("start", options=start_opts, required=True, help="开始时间（30 分钟刻度）。"),
+                "end": st.column_config.SelectboxColumn("end", options=end_opts, required=True, help="结束时间（30 分钟刻度；可选 24:00）。"),
+                "min_staff": st.column_config.NumberColumn("min_staff", min_value=0, step=1, required=True, help="该时间窗内，每小时最少在岗人数。"),
+            },
+            key="new_group_windows",
+        )
 
         submitted = st.form_submit_button("创建小组")
         if submitted:
@@ -1048,18 +1303,10 @@ with st.expander("自定义更表规则（小组）"):
                 if any(g.get("name") == new_name.strip() for g in groups):
                     st.error("已存在同名小组，请换一个名称。")
                 else:
-                    windows = []
-                    for _, r in win_df.iterrows():
-                        day_type = str(r.get("day_type", "all")).strip().lower()
-                        start = str(r.get("start", "00:00")).strip()
-                        end = str(r.get("end", "24:00")).strip()
-                        try:
-                            min_staff = int(r.get("min_staff", 1))
-                        except Exception:
-                            min_staff = 1
-                        if not start or not end:
-                            continue
-                        windows.append({"day_type": day_type, "start": start, "end": end, "min_staff": min_staff})
+                    windows, win_errors = _validate_and_build_windows_df(win_df)
+                    if win_errors:
+                        st.error("规则段存在问题，请修正后再提交：\n\n- " + "\n- ".join(win_errors))
+                        st.stop()
 
                     new_group = {
                         "id": uuid.uuid4().hex,
@@ -1122,10 +1369,28 @@ with st.expander("自定义更表规则（小组）"):
                 windows_df = pd.DataFrame(g.get("requirements_windows") or [])
                 if windows_df.empty:
                     windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
+                windows_df, dropped_bad = _normalize_windows_df_for_editor(windows_df)
+                if dropped_bad:
+                    st.caption(f"已自动忽略 {dropped_bad} 行无效规则段（start/end 为空或为 None）。保存后这些无效行也不会写回。")
+                # Include any existing values so the editor can display legacy data,
+                # but validator will still enforce base options on save.
+                existing_day = [str(x).strip().lower() for x in windows_df.get("day_type", []) if str(x).strip()]
+                existing_start = [str(x).strip() for x in windows_df.get("start", []) if str(x).strip()]
+                existing_end = [str(x).strip() for x in windows_df.get("end", []) if str(x).strip()]
+                day_opts = list(dict.fromkeys(_DAY_TYPE_OPTIONS_BASE + existing_day))
+                start_opts = list(dict.fromkeys(_TIME_OPTIONS_BASE + existing_start))
+                end_opts = list(dict.fromkeys(_TIME_OPTIONS_BASE + existing_end))
                 edited_windows_df = st.data_editor(
                     windows_df,
                     num_rows="dynamic",
                     width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "day_type": st.column_config.SelectboxColumn("day_type", options=day_opts, required=True, help="all=每天；mon..sun=周一..周日（兼容 weekday/weekend）。"),
+                        "start": st.column_config.SelectboxColumn("start", options=start_opts, required=True, help="开始时间（30 分钟刻度）。"),
+                        "end": st.column_config.SelectboxColumn("end", options=end_opts, required=True, help="结束时间（30 分钟刻度；可选 24:00）。"),
+                        "min_staff": st.column_config.NumberColumn("min_staff", min_value=0, step=1, required=True, help="该时间窗内，每小时最少在岗人数。"),
+                    },
                     key=f"{key_prefix}windows",
                 )
 
@@ -1139,18 +1404,10 @@ with st.expander("自定义更表规则（小组）"):
                     elif new_name_norm != g.get("name") and any(x.get("name") == new_name_norm for x in groups):
                         st.error("已存在同名小组，请换一个名称。")
                     else:
-                        new_windows = []
-                        for _, r in edited_windows_df.iterrows():
-                            day_type = str(r.get("day_type", "all")).strip().lower()
-                            start = str(r.get("start", "00:00")).strip()
-                            end = str(r.get("end", "24:00")).strip()
-                            try:
-                                min_staff = int(r.get("min_staff", 1))
-                            except Exception:
-                                min_staff = 1
-                            if not start or not end:
-                                continue
-                            new_windows.append({"day_type": day_type, "start": start, "end": end, "min_staff": min_staff})
+                        new_windows, win_errors = _validate_and_build_windows_df(edited_windows_df)
+                        if win_errors:
+                            st.error("规则段存在问题，请修正后再保存：\n\n- " + "\n- ".join(win_errors))
+                            st.stop()
 
                         g["name"] = new_name_norm
                         g["description"] = edited_desc.strip()

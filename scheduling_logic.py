@@ -28,6 +28,109 @@ def _default_group_rules():
     return {"version": 1, "updated_at": None, "groups": []}
 
 
+_DOW_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def _normalize_day_type(day_type):
+    """
+    Normalize day_type for group rules.
+    Supported (canonical): all, weekday, weekend, mon..sun
+    Accepts common synonyms (case-insensitive), including Chinese.
+    """
+    s = str(day_type or "all").strip().lower()
+    if not s:
+        return "all"
+
+    # Chinese & common synonyms
+    zh_map = {
+        "每天": "all",
+        "全部": "all",
+        "全周": "all",
+        "周一": "mon",
+        "星期一": "mon",
+        "礼拜一": "mon",
+        "周二": "tue",
+        "星期二": "tue",
+        "礼拜二": "tue",
+        "周三": "wed",
+        "星期三": "wed",
+        "礼拜三": "wed",
+        "周四": "thu",
+        "星期四": "thu",
+        "礼拜四": "thu",
+        "周五": "fri",
+        "星期五": "fri",
+        "礼拜五": "fri",
+        "周六": "sat",
+        "星期六": "sat",
+        "礼拜六": "sat",
+        "周日": "sun",
+        "周天": "sun",
+        "星期日": "sun",
+        "星期天": "sun",
+        "礼拜日": "sun",
+        "礼拜天": "sun",
+        "工作日": "weekday",
+        "周中": "weekday",
+        "周末": "weekend",
+    }
+    if s in zh_map:
+        s = zh_map[s]
+
+    # English variants
+    en_map = {
+        "everyday": "all",
+        "daily": "all",
+        "mon": "mon",
+        "monday": "mon",
+        "tue": "tue",
+        "tues": "tue",
+        "tuesday": "tue",
+        "wed": "wed",
+        "weds": "wed",
+        "wednesday": "wed",
+        "thu": "thu",
+        "thur": "thu",
+        "thurs": "thu",
+        "thursday": "thu",
+        "fri": "fri",
+        "friday": "fri",
+        "sat": "sat",
+        "saturday": "sat",
+        "sun": "sun",
+        "sunday": "sun",
+        "weekday": "weekday",
+        "weekdays": "weekday",
+        "workday": "weekday",
+        "weekend": "weekend",
+        "weekends": "weekend",
+        "all": "all",
+    }
+    s = en_map.get(s, s)
+
+    if s in {"all", "weekday", "weekend"}:
+        return s
+    if s in set(_DOW_KEYS):
+        return s
+    return "all"
+
+
+def _day_type_applies(window_day_type, date_obj):
+    """Return True if a window day_type applies to given datetime/date."""
+    wd = _normalize_day_type(window_day_type)
+    if wd == "all":
+        return True
+    dow = _DOW_KEYS[date_obj.weekday()]  # mon..sun
+    if wd == dow:
+        return True
+    is_weekend = date_obj.weekday() >= 5
+    if wd == "weekday":
+        return not is_weekend
+    if wd == "weekend":
+        return is_weekend
+    return False
+
+
 def _normalize_group_rules(data):
     """
     Ensure group rules have a stable schema.
@@ -83,9 +186,7 @@ def _normalize_group_rules(data):
         for w in windows:
             if not isinstance(w, dict):
                 continue
-            day_type = (w.get("day_type") or "all").strip().lower()
-            if day_type not in {"all", "weekday", "weekend"}:
-                day_type = "all"
+            day_type = _normalize_day_type(w.get("day_type") or "all")
             start = str(w.get("start") or "00:00").strip()
             end = str(w.get("end") or "24:00").strip()
             try:
@@ -722,8 +823,9 @@ def validate_schedule_against_group_rules(schedule_list, group_rules=None):
                 continue
 
             for w in windows:
-                w_day = (w.get("day_type") or "all").lower()
-                if w_day not in {"all", day_type}:
+                w_day = (w.get("day_type") or "all")
+                # Support mon..sun + keep backward compatible weekday/weekend
+                if not _day_type_applies(w_day, date_obj):
                     continue
                 start_m = _parse_time_to_minutes(w.get("start", "00:00"))
                 end_m = _parse_time_to_minutes(w.get("end", "24:00"))
