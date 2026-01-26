@@ -148,6 +148,7 @@ def _normalize_group_rules(data):
           "active": true,
           "headcount_planned": 0 | null,
           "members": ["Alice", "Bob"],
+          "backup_members": ["Cindy"],
           "requirements_windows": [
             {"day_type":"all|weekday|weekend","start":"00:00","end":"24:00","min_staff":1}
           ]
@@ -183,6 +184,15 @@ def _normalize_group_rules(data):
         seen = set()
         members = [m for m in members if not (m in seen or seen.add(m))]
 
+        backup_members = g.get("backup_members") or []
+        if not isinstance(backup_members, list):
+            backup_members = []
+        backup_members = [str(m).strip() for m in backup_members if str(m).strip()]
+        # Remove overlaps; members take precedence
+        backup_members = [m for m in backup_members if m not in members]
+        seen_b = set()
+        backup_members = [m for m in backup_members if not (m in seen_b or seen_b.add(m))]
+
         windows = g.get("requirements_windows") or []
         if not isinstance(windows, list):
             windows = []
@@ -217,6 +227,7 @@ def _normalize_group_rules(data):
                 "active": bool(g.get("active", True)),
                 "headcount_planned": g.get("headcount_planned", None),
                 "members": members,
+                "backup_members": backup_members,
                 "requirements_windows": norm_windows,
             }
         )
@@ -304,6 +315,14 @@ def _sync_groups_after_employee_rename(old_name, new_name):
             seen = set()
             g["members"] = [m for m in g["members"] if not (m in seen or seen.add(m))]
             changed = True
+        backups = g.get("backup_members", [])
+        if old_name in backups:
+            g["backup_members"] = [new_name if m == old_name else m for m in backups]
+            # de-dup and avoid overlap with members
+            seen_b = set()
+            g["backup_members"] = [m for m in g["backup_members"] if not (m in seen_b or seen_b.add(m))]
+            g["backup_members"] = [m for m in g["backup_members"] if m not in g.get("members", [])]
+            changed = True
     if changed:
         save_group_rules(GROUP_RULES)
 
@@ -318,6 +337,10 @@ def _sync_groups_after_employee_delete(name):
         members = g.get("members", [])
         if name in members:
             g["members"] = [m for m in members if m != name]
+            changed = True
+        backups = g.get("backup_members", [])
+        if name in backups:
+            g["backup_members"] = [m for m in backups if m != name]
             changed = True
     if changed:
         save_group_rules(GROUP_RULES)
