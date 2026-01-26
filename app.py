@@ -2334,9 +2334,11 @@ with st.expander("自定义更表规则（小组）"):
                     default=default_members,
                     key=f"{key_prefix}members",
                 )
+                backup_options = [e for e in employee_names if e not in edited_members]
+                default_backups = [m for m in default_backups if m in backup_options]
                 edited_backup_members = st.multiselect(
                     "备选成员（从现有员工中选择）",
-                    options=[e for e in employee_names if e not in edited_members],
+                    options=backup_options,
                     default=default_backups,
                     key=f"{key_prefix}backup_members",
                 )
