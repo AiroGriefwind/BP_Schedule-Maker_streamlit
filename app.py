@@ -1839,59 +1839,60 @@ with st.expander("自定义更表规则（小组）"):
                     if alt is not None and not grid_df.empty:
                         sel_param = alt.selection_point(fields=["date", "time"], on="click", empty=False, name="cell")
                         time_sort = sorted(grid_df["time"].unique())
-                        chart = (
-                            alt.layer(
-                                # base heatmap with bottom axis
-                                alt.Chart(grid_df)
-                                .mark_rect()
-                                .encode(
-                                    x=alt.X(
-                                        "weekday:N",
-                                        sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
-                                        title=None,
-                                        axis=alt.Axis(labelAngle=0),
-                                    ),
-                                    y=alt.Y("time:N", sort=time_sort, title=None),
-                                    color=alt.Color(
-                                        "status:N",
-                                        scale=alt.Scale(domain=["na", "ok", "deficit"], range=["#f3f4f6", "#d9f2d9", "#f8d7da"]),
-                                        legend=None,
-                                    ),
-                                    tooltip=[
-                                        alt.Tooltip("date:N", title="日期"),
-                                        alt.Tooltip("weekday:N", title="周几"),
-                                        alt.Tooltip("time:N", title="时间格"),
-                                        alt.Tooltip("required:Q", title="required"),
-                                        alt.Tooltip("staffed:Q", title="staffed"),
-                                        alt.Tooltip("shortage:Q", title="shortage"),
-                                    ],
+                        chart_top = (
+                            alt.Chart(grid_df)
+                            .mark_rect(opacity=0)
+                            .encode(
+                                x=alt.X(
+                                    "weekday:N",
+                                    sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+                                    title=None,
+                                    axis=alt.Axis(orient="top", labelAngle=0),
                                 ),
-                                # top axis labels (no marks)
-                                alt.Chart(grid_df)
-                                .mark_rect(opacity=0)
-                                .encode(
-                                    x=alt.X(
-                                        "weekday:N",
-                                        sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
-                                        title=None,
-                                        axis=alt.Axis(orient="top", labelAngle=0),
-                                    ),
-                                    y=alt.Y("time:N", sort=time_sort, title=None, axis=None),
+                                y=alt.Y("time:N", sort=time_sort, title=None, axis=None),
+                            )
+                            .properties(height=30)
+                        )
+                        chart_main = (
+                            alt.Chart(grid_df)
+                            .mark_rect()
+                            .encode(
+                                x=alt.X(
+                                    "weekday:N",
+                                    sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+                                    title=None,
+                                    axis=alt.Axis(labelAngle=0),
                                 ),
+                                y=alt.Y("time:N", sort=time_sort, title=None),
+                                color=alt.Color(
+                                    "status:N",
+                                    scale=alt.Scale(domain=["na", "ok", "deficit"], range=["#f3f4f6", "#d9f2d9", "#f8d7da"]),
+                                    legend=None,
+                                ),
+                                tooltip=[
+                                    alt.Tooltip("date:N", title="日期"),
+                                    alt.Tooltip("weekday:N", title="周几"),
+                                    alt.Tooltip("time:N", title="时间格"),
+                                    alt.Tooltip("required:Q", title="required"),
+                                    alt.Tooltip("staffed:Q", title="staffed"),
+                                    alt.Tooltip("shortage:Q", title="shortage"),
+                                ],
                             )
                             .add_params(sel_param)
                             .properties(height=720)
                         )
                         # attempt to get selection payload from Streamlit (version-dependent)
                         try:
-                            evt = st.altair_chart(chart, use_container_width=True, on_select="rerun", key="validate_group_week_heatmap")
+                            st.altair_chart(chart_top, use_container_width=True, key="validate_group_week_heatmap_top")
+                            evt = st.altair_chart(chart_main, use_container_width=True, on_select="rerun", key="validate_group_week_heatmap")
                             got = _extract_date_time_from_obj(evt)
                             if got:
                                 st.session_state["_validate_selected_cell"] = {"date": got[0], "time": got[1]}
                                 sel_date, sel_time = got[0], got[1]
                         except TypeError:
                             # older Streamlit: no on_select support
-                            st.altair_chart(chart, use_container_width=True)
+                            st.altair_chart(chart_top, use_container_width=True, key="validate_group_week_heatmap_top")
+                            st.altair_chart(chart_main, use_container_width=True)
                     else:
                         # fallback
                         st.dataframe(
