@@ -20,10 +20,12 @@ from scheduling_logic import (
     add_employee,
     edit_employee,
     delete_employee,
+    restore_employees_from_storage,
     export_availability_to_excel,
     clear_availability,
     sync_availability,
     get_last_generated_schedule,
+    load_role_rules,
     EMPLOYEES,
     ROLE_RULES,
 )
@@ -155,19 +157,24 @@ st.title(get_app_title("Auto-Schedule Maker"))
 if st.button("Upload Initial Data to Firebase"):
     fm.upload_initial_data()
 
+
 # --- State Management ---
+def refresh_master_data():
+    """Refresh employees/role rules/group rules from Firebase and sync availability."""
+    load_role_rules()
+    st.session_state.employees = load_employees()
+    st.session_state.group_rules = load_group_rules()
+    # Sync employees with availability data
+    sync_availability()
+    st.session_state.availability = load_data()
+
+
 def initialize_session_state():
     """Load initial data into the session state."""
     if not st.session_state.get('initialized'):
         st.session_state.start_date = datetime(2025, 3, 17)
-        st.session_state.employees = load_employees()
-        
-        # Sync employees with availability data
-        sync_availability() 
-        
-        st.session_state.availability = load_data()
-        st.session_state.group_rules = load_group_rules()
-        
+        refresh_master_data()
+
         if not st.session_state.availability:
             st.session_state.availability = init_availability(
                 st.session_state.start_date, st.session_state.employees
@@ -1293,6 +1300,14 @@ def dataframe_to_availability(edited_df):
 
 # --- Initialization ---
 initialize_session_state()
+
+# Main refresh entry point (safe for users who don't open the sidebar)
+if st.button("从 Firebase 刷新员工/角色规则（覆盖未保存更改）"):
+    with st.spinner("Refreshing from Firebase..."):
+        refresh_master_data()
+    st.toast("🔄 已从 Firebase 刷新员工/角色规则，并同步 availability。")
+    st.rerun()
+
 availability_df = availability_to_dataframe()
 availability_color_css_df = availability_to_color_css_dataframe()
 
@@ -1369,6 +1384,22 @@ if main_shift_file:
                     st.success(f"Employee {name} added.")
 
 st.sidebar.header("Actions")
+if st.sidebar.button("从 Firebase 刷新员工/角色规则（覆盖未保存更改）"):
+    with st.spinner("Refreshing from Firebase..."):
+        refresh_master_data()
+    st.toast("🔄 已从 Firebase 刷新员工/角色规则，并同步 availability。")
+    st.rerun()
+if st.sidebar.button("从 Storage 手动恢复员工并回写 RTDB"):
+    with st.spinner("Restoring employees from Storage..."):
+        restored = restore_employees_from_storage()
+        if restored:
+            st.session_state.employees = restored
+            sync_availability()
+            st.session_state.availability = load_data()
+            st.toast("✅ 已从 Storage 恢复员工并回写 RTDB。")
+            st.rerun()
+        else:
+            st.sidebar.error("Storage 中未找到可用的 config/employees.json。")
 if st.sidebar.button("Generate Schedule"):
     with st.spinner("Generating schedule..."):
         warnings = generate_schedule(st.session_state.availability, st.session_state.start_date, export_to_excel=False)
@@ -1393,7 +1424,7 @@ if st.sidebar.button("Save All Changes", type="primary"):
         # Step 2: Save to session state and file
         st.session_state.availability = merged_availability
         save_data(st.session_state.availability)
-        save_employees()
+        save_employees(st.session_state.employees)
         st.toast("💾 All changes saved to server files!")
 
 # Explicit save for imported availability (clarify persistence for users)

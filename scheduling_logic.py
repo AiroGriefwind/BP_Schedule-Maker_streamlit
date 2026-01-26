@@ -251,7 +251,10 @@ def load_group_rules():
         except Exception:
             data = None
 
-    GROUP_RULES = _normalize_group_rules(data)
+    normalized = _normalize_group_rules(data)
+    # Update in place so imported references stay fresh
+    GROUP_RULES.clear()
+    GROUP_RULES.update(normalized)
 
     # Self-heal DB if it was incomplete and we successfully normalized a full schema.
     if db_incomplete:
@@ -385,19 +388,90 @@ class KoreanEntertainment(Employee):
     def get_available_shifts(self):
         return ["10-19"]
 
-def init_employees():
-    employees_raw = fm.get_data('employees')
-    employees = []
-    if employees_raw is None:
+def _normalize_employee_records(data):
+    """Normalize employee records from DB/storage into a list of dicts."""
+    if not data:
         return []
-    for emp in employees_raw:
-        if emp['role'] == 'Freelancer':
-            employees.append(Freelancer(emp['name']))
-        elif emp['role'] == 'SeniorEditor':
-            employees.append(SeniorEditor(emp['name']))
+    if isinstance(data, dict):
+        records = list(data.values())
+    elif isinstance(data, list):
+        records = data
+    else:
+        return []
+
+    normalized = []
+    for emp in records:
+        if not isinstance(emp, dict):
+            continue
+        name = str(emp.get("name") or "").strip()
+        role = str(emp.get("role") or emp.get("employee_type") or "").strip()
+        if not name or not role:
+            continue
+        normalized.append(
+            {
+                "name": name,
+                "role": role,
+                "additional_roles": emp.get("additional_roles", []) or [],
+                "start_time": emp.get("start_time"),
+                "end_time": emp.get("end_time"),
+            }
+        )
+    return normalized
+
+
+def _load_employees_raw():
+    """Load employee records from Firebase DB, with Storage/local fallback (no auto-write)."""
+    data = fm.get_data("employees")
+    records = _normalize_employee_records(data)
+    if records:
+        return records
+
+    # Fallback: Firebase Storage (config path only, best-effort, no auto-write)
+    recovered = None
+    try:
+        if hasattr(fm, "get_json_from_storage"):
+            recovered = fm.get_json_from_storage("config/employees.json")
+    except Exception:
+        recovered = None
+    records = _normalize_employee_records(recovered)
+    if records:
+        return records
+
+    # Fallback: local seed file
+    if os.path.exists("employees.json"):
+        try:
+            with open("employees.json", "r", encoding="utf-8") as f:
+                records = _normalize_employee_records(json.load(f))
+        except Exception:
+            records = []
+    return records
+
+
+def _build_employees(records):
+    employees = []
+    for emp in records:
+        role = emp.get("role")
+        if role == "Freelancer":
+            obj = Freelancer(emp.get("name"))
+        elif role == "SeniorEditor":
+            obj = SeniorEditor(emp.get("name"))
         else:
-            employees.append(Employee(emp['name'], emp['role']))
+            obj = Employee(
+                emp.get("name"),
+                role,
+                emp.get("additional_roles", []),
+                emp.get("start_time"),
+                emp.get("end_time"),
+            )
+        obj.additional_roles = emp.get("additional_roles", []) or []
+        obj.start_time = emp.get("start_time")
+        obj.end_time = emp.get("end_time")
+        employees.append(obj)
     return employees
+
+
+def init_employees():
+    return _build_employees(_load_employees_raw())
 
 
 def init_availability(start_date, employees):
@@ -461,21 +535,29 @@ FREELANCERS = [employee.name for employee in EMPLOYEES if isinstance(employee, F
 # }
 
 def load_employees():
-    data = fm.get_data('employees')
-    if not data:
-        return init_employees()
-    # If your data is a dict, use `data.values()`; if list, use as is
-    employee_list = data.values() if isinstance(data, dict) else data
-    return [
-        Employee(
-            emp["name"],
-            emp["role"],
-            emp.get("additional_roles", []),
-            emp.get("start_time"),
-            emp.get("end_time")
-        )
-        for emp in employee_list
-    ]
+    records = _load_employees_raw()
+    return _build_employees(records)
+
+
+def restore_employees_from_storage():
+    """
+    Manually restore employees from Firebase Storage (config/employees.json)
+    and write back to RTDB. Returns list[Employee] or None if not available.
+    """
+    recovered = None
+    try:
+        if hasattr(fm, "get_json_from_storage"):
+            recovered = fm.get_json_from_storage("config/employees.json")
+    except Exception:
+        recovered = None
+    records = _normalize_employee_records(recovered)
+    if not records:
+        return None
+    try:
+        fm.save_data("employees", records)
+    except Exception:
+        pass
+    return _build_employees(records)
 
 def import_employees_from_main_excel(excel_file, current_employees, addemployee_callback):
     """
@@ -617,16 +699,22 @@ def validate_synchronization():
                 f"Orphaned entry: {emp_name} on {date}"
 
 
-def save_employees():
-    # EMPLOYEES is assumed to be your global employee list
+def save_employees(employees=None):
+    # Use passed list if provided; fall back to global cache
+    source = employees if employees is not None else EMPLOYEES
     json_data = [{
         "name": emp.name,
         "role": emp.employee_type,
         "additional_roles": emp.additional_roles,
         "start_time": emp.start_time,
         "end_time": emp.end_time
-    } for emp in EMPLOYEES]
+    } for emp in source]
     fm.save_data('employees', json_data)
+    # Best-effort backup to Firebase Storage (optional)
+    try:
+        fm.save_json_to_storage("config/employees.json", json_data)
+    except Exception:
+        pass
 
 
 
@@ -1271,8 +1359,35 @@ def load_role_rules():
     """Load ROLE_RULES from Firebase if it exists."""
     global ROLE_RULES
     data = fm.get_data('role_rules')
+    if not data:
+        recovered = None
+        try:
+            if hasattr(fm, "get_json_from_storage"):
+                recovered = fm.get_json_from_storage("config/role_rules.json")
+                if not recovered:
+                    recovered = fm.get_json_from_storage("role_rules.json")
+        except Exception:
+            recovered = None
+
+        if recovered:
+            data = recovered
+            # Self-heal DB if missing
+            try:
+                fm.save_data("role_rules", data)
+            except Exception:
+                pass
+
+        if not data and os.path.exists("role_rules.json"):
+            try:
+                with open("role_rules.json", "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = None
+
     if data:
-        ROLE_RULES = data
+        # Update in place so imported references stay fresh
+        ROLE_RULES.clear()
+        ROLE_RULES.update(data)
     # Optionally, else keep the default in memory if not present
 
 
