@@ -1156,16 +1156,30 @@ def merge_edited_df_with_color(edited_df, orig_availability):
     and the original nested-availability dict with color+value,
     return a new nested dict with new values but colors preserved/retained.
     """
+    if edited_df is None or edited_df.empty:
+        return orig_availability or {}
+
     result = {}
-    edited_df_nodate = edited_df.set_index("Date")
+    if "Date" in edited_df.columns:
+        edited_df_nodate = edited_df.set_index("Date")
+    else:
+        edited_df_nodate = edited_df.copy()
+
     for date, row in edited_df_nodate.iterrows():
-        result[date] = {}
-        for emp in row.index:
-            new_val = row[emp]
-            orig_cell = orig_availability.get(date, {}).get(emp, {})
+        date_key = str(date)
+        result[date_key] = {}
+        for emp, new_val in row.items():
+            if isinstance(new_val, float) and pd.isna(new_val):
+                new_val = ""
+            if new_val is None:
+                new_val = ""
+            if not isinstance(new_val, str):
+                new_val = str(new_val)
+            new_val = new_val.strip()
+            orig_cell = orig_availability.get(date_key, {}).get(emp, {})
             cell_color = orig_cell.get("color")
             cell_font = orig_cell.get("font_color")
-            result[date][emp] = {"value": new_val, "color": cell_color, "font_color": cell_font}
+            result[date_key][emp] = {"value": new_val, "color": cell_color, "font_color": cell_font}
     return result
 
 
@@ -1389,6 +1403,10 @@ if st.sidebar.button("从 Firebase 刷新员工/角色规则（覆盖未保存�
         refresh_master_data()
     st.toast("🔄 已从 Firebase 刷新员工/角色规则，并同步 availability。")
     st.rerun()
+if st.sidebar.button("仅保存员工（写入 RTDB + Storage）"):
+    with st.spinner("Saving employees..."):
+        save_employees(st.session_state.employees)
+    st.toast("💾 员工已保存到 RTDB，并备份到 Storage/config/employees.json。")
 if st.sidebar.button("从 Storage 手动恢复员工并回写 RTDB"):
     with st.spinner("Restoring employees from Storage..."):
         restored = restore_employees_from_storage()
