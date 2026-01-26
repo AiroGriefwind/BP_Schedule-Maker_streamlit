@@ -393,6 +393,7 @@ def _time_window_to_minutes(start: str, end: str) -> Tuple[int, int]:
 def validate_group_coverage_from_availability(
     availability: Dict[str, Dict[str, Any]],
     group: Dict[str, Any],
+    group_rules: Optional[Dict[str, Any]] = None,
     step_minutes: int = 60,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
@@ -404,6 +405,9 @@ def validate_group_coverage_from_availability(
     """
     members = [m for m in (group.get("members") or []) if m]
     windows = group.get("requirements_windows") or []
+    current_rule_type = str(group.get("rule_type") or "routine").strip().lower()
+    if current_rule_type not in {"routine", "task"}:
+        current_rule_type = "routine"
 
     # Pre-parse availability intervals per date/member
     parsed: Dict[str, Dict[str, List[Tuple[int, int]]]] = {}
@@ -450,6 +454,20 @@ def validate_group_coverage_from_availability(
                     continue
                 on = []
                 for m in members:
+                    # Routine rule: members can only take one routine at a time.
+                    # If this member is already occupied by a higher-priority routine group,
+                    # they cannot be counted for this routine group.
+                    if current_rule_type == "routine":
+                        conflict_group = _member_conflict_group_name(
+                            member=m,
+                            date_obj=d,
+                            slot_s=slot_s,
+                            slot_e=slot_e,
+                            current_group=group,
+                            group_rules=group_rules or {},
+                        )
+                        if conflict_group:
+                            continue
                     for is0, ie0 in parsed[date_key].get(m, []):
                         # any overlap counts
                         if max(is0, slot_s) < min(ie0, slot_e):
@@ -746,35 +764,64 @@ def _member_conflict_group_name(
     date_obj: datetime,
     slot_s: int,
     slot_e: int,
-    current_group_name: str,
+    current_group: Dict[str, Any],
     group_rules: Dict[str, Any],
-    current_priority: int,
 ) -> Optional[str]:
     """
-    Reserve interface for 'super employee' / cross-group priorities.
-
-    If a member belongs to another group with higher priority, and that group's
-    requirement windows cover this date/time slot, we mark the member as
-    conflicted by that group (meaning: their time should be considered unavailable
-    to the current group).
+    Routine-only conflict rule:
+    - A member can only be counted for ONE routine at the same time.
+    - For now, "priority" is inferred by group order in group_rules (earlier = higher).
+    - Task rules never conflict with routine or task.
     """
     try:
         groups = (group_rules or {}).get("groups", []) or []
     except Exception:
         groups = []
-    for g in groups:
+
+    current_rule_type = str(current_group.get("rule_type") or "routine").strip().lower()
+    if current_rule_type not in {"routine", "task"}:
+        current_rule_type = "routine"
+    if current_rule_type != "routine":
+        return None
+
+    def _gkey(g: Dict[str, Any]) -> str:
+        return str(g.get("id") or g.get("name") or "").strip()
+
+    cur_key = _gkey(current_group)
+    cur_idx = None
+    for i, g in enumerate(groups):
+        if _gkey(g) == cur_key:
+            cur_idx = i
+            break
+
+    # If we can't find the current group in the list, skip conflicts to avoid false negatives.
+    if cur_idx is None:
+        return None
+
+    for i, g in enumerate(groups):
         try:
-            gname = str(g.get("name") or "").strip()
-            if not gname or gname == current_group_name:
+            if i >= cur_idx:
                 continue
-            gprio = int(g.get("priority") or 0)
-            if gprio <= int(current_priority or 0):
+            gname = str(g.get("name") or "").strip()
+            if not gname:
+                continue
+            g_rule_type = str(g.get("rule_type") or "routine").strip().lower()
+            if g_rule_type not in {"routine", "task"}:
+                g_rule_type = "routine"
+            if g_rule_type != "routine":
+                continue
+            if not bool(g.get("active", True)):
                 continue
             members = g.get("members") or []
             if member not in members:
                 continue
             windows = g.get("requirements_windows") or []
             for w in windows:
+                try:
+                    if int(w.get("min_staff") or 0) <= 0:
+                        continue
+                except Exception:
+                    pass
                 day_type = str(w.get("day_type") or "all").strip().lower()
                 if not _day_type_applies_ui(day_type, date_obj):
                     continue
@@ -803,8 +850,9 @@ def _build_cell_member_detail_df(
     Shows raw imported cell value verbatim in parentheses.
     """
     members = [m for m in (group.get("members") or []) if m]
-    current_group_name = str(group.get("name") or "").strip()
-    current_priority = int(group.get("priority") or 0)
+    current_rule_type = str(group.get("rule_type") or "routine").strip().lower()
+    if current_rule_type not in {"routine", "task"}:
+        current_rule_type = "routine"
 
     try:
         date_obj = pd.to_datetime(date_key).to_pydatetime()
@@ -827,9 +875,8 @@ def _build_cell_member_detail_df(
             date_obj=date_obj,
             slot_s=slot_s,
             slot_e=slot_e,
-            current_group_name=current_group_name,
+            current_group=group,
             group_rules=group_rules,
-            current_priority=current_priority,
         )
 
         # Leave-like raw values first (AL/SL/...)
@@ -838,7 +885,7 @@ def _build_cell_member_detail_df(
             detail = f"{raw_s}" if raw_s else ""
         # Then conflict (higher priority group) overrides "到岗"
         elif conflict_group:
-            status = "无优先级"
+            status = "被例行占用"
             if raw_s:
                 detail = f"{raw_s}（{conflict_group}）"
             else:
@@ -1617,7 +1664,10 @@ with st.expander("自定义更表规则（小组）"):
             else:
                 with st.spinner("正在按 60 分钟时段校验覆盖..."):
                     summary_df, deficits_df, all_checked_df = validate_group_coverage_from_availability(
-                        st.session_state.availability, gsel, step_minutes=60
+                        st.session_state.availability,
+                        gsel,
+                        group_rules=st.session_state.get("group_rules") or GROUP_RULES,
+                        step_minutes=60,
                     )
                 # Build week bins from imported dates
                 date_keys = []
