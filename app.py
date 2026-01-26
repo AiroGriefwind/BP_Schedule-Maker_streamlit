@@ -21,6 +21,7 @@ from scheduling_logic import (
     edit_employee,
     delete_employee,
     restore_employees_from_storage,
+    save_employees_to_storage_only,
     export_availability_to_excel,
     clear_availability,
     sync_availability,
@@ -1413,13 +1414,6 @@ def dataframe_to_availability(edited_df):
 # --- Initialization ---
 initialize_session_state()
 
-# Main refresh entry point (safe for users who don't open the sidebar)
-if st.button("从 Firebase 刷新员工/角色规则（覆盖未保存更改）"):
-    with st.spinner("Refreshing from Firebase..."):
-        refresh_master_data()
-    st.toast("🔄 已从 Firebase 刷新员工/角色规则，并同步 availability。")
-    st.rerun()
-
 availability_df = availability_to_dataframe()
 availability_color_css_df = availability_to_color_css_dataframe()
 
@@ -1496,26 +1490,6 @@ if main_shift_file:
                     st.success(f"Employee {name} added.")
 
 st.sidebar.header("Actions")
-if st.sidebar.button("从 Firebase 刷新员工/角色规则（覆盖未保存更改）"):
-    with st.spinner("Refreshing from Firebase..."):
-        refresh_master_data()
-    st.toast("🔄 已从 Firebase 刷新员工/角色规则，并同步 availability。")
-    st.rerun()
-if st.sidebar.button("仅保存员工（写入 RTDB + Storage）"):
-    with st.spinner("Saving employees..."):
-        save_employees(st.session_state.employees)
-    st.toast("💾 员工已保存到 RTDB，并备份到 Storage/config/employees.json。")
-if st.sidebar.button("从 Storage 手动恢复员工并回写 RTDB"):
-    with st.spinner("Restoring employees from Storage..."):
-        restored = restore_employees_from_storage()
-        if restored:
-            st.session_state.employees = restored
-            sync_availability()
-            st.session_state.availability = load_data()
-            st.toast("✅ 已从 Storage 恢复员工并回写 RTDB。")
-            st.rerun()
-        else:
-            st.sidebar.error("Storage 中未找到可用的 config/employees.json。")
 if st.sidebar.button("Generate Schedule"):
     with st.spinner("Generating schedule..."):
         warnings = generate_schedule(st.session_state.availability, st.session_state.start_date, export_to_excel=False)
@@ -1614,6 +1588,19 @@ st.title("Employee Availability Editor")
 
 # --- Employee Management Section ---
 with st.expander("Manage Employees"):
+    action_cols = st.columns([1, 1, 2])
+    with action_cols[0]:
+        if st.button("刷新"):
+            with st.spinner("Refreshing from Firebase..."):
+                refresh_master_data()
+            st.toast("🔄 已刷新员工/角色规则，并同步 availability。")
+            st.rerun()
+    with action_cols[1]:
+        if st.button("手动保存"):
+            with st.spinner("Saving employees to Storage..."):
+                save_employees_to_storage_only(st.session_state.employees)
+            st.toast("💾 员工已保存到 Storage/config/employees.json。")
+
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Add New Employee")

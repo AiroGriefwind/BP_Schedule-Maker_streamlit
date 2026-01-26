@@ -766,6 +766,22 @@ def save_employees(employees=None):
         pass
 
 
+def save_employees_to_storage_only(employees=None):
+    """Save employees to Firebase Storage only (no RTDB write)."""
+    source = employees if employees is not None else EMPLOYEES
+    json_data = [{
+        "name": emp.name,
+        "role": emp.employee_type,
+        "additional_roles": emp.additional_roles,
+        "start_time": emp.start_time,
+        "end_time": emp.end_time
+    } for emp in source]
+    try:
+        fm.save_json_to_storage("config/employees.json", json_data)
+    except Exception:
+        pass
+
+
 
 def add_employee(name, role, additional_roles=None, start_time=None, end_time=None):
     if role == 'Freelancer':
