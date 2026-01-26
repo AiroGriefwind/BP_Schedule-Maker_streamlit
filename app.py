@@ -2208,6 +2208,7 @@ with st.expander("自定义更表规则（小组）"):
             options=[e for e in employee_names if e not in new_members],
             default=[],
         )
+        st.caption("同一员工不可同时出现在成员与备选中。")
 
         st.markdown("规则段（可多段）：每一段表示在该时间窗内，每个小时至少需要多少名成员在岗。")
         st.caption("day_type 建议：all=每天；mon..sun=周一..周日。start/end 为 30 分钟刻度，end 可选 24:00。")
@@ -2245,10 +2246,18 @@ with st.expander("自定义更表规则（小组）"):
                         st.error("规则段存在问题，请修正后再提交：\n\n- " + "\n- ".join(win_errors))
                         st.stop()
 
-                    primary_members = [m for m in new_members if m in employee_names]
+                    name_lookup = {str(n).strip(): n for n in employee_names if str(n).strip()}
+                    primary_members = [name_lookup.get(str(m).strip()) for m in new_members]
+                    primary_members = [m for m in primary_members if m]
                     primary_members = list(dict.fromkeys(primary_members))
-                    backup_members = [m for m in new_backup_members if m in employee_names and m not in primary_members]
+                    backup_members = [name_lookup.get(str(m).strip()) for m in new_backup_members]
+                    backup_members = [m for m in backup_members if m]
                     backup_members = list(dict.fromkeys(backup_members))
+                    overlap = sorted(set(primary_members) & set(backup_members))
+                    if overlap:
+                        st.error("成员与备选不能重复：" + "、".join(overlap))
+                        st.stop()
+                    backup_members = [m for m in backup_members if m not in primary_members]
 
                     new_group = {
                         "id": uuid.uuid4().hex,
@@ -2331,6 +2340,7 @@ with st.expander("自定义更表规则（小组）"):
                     default=default_backups,
                     key=f"{key_prefix}backup_members",
                 )
+                st.caption("同一员工不可同时出现在成员与备选中。")
 
             with edit_cols[1]:
                 windows_df = pd.DataFrame(g.get("requirements_windows") or [])
@@ -2381,11 +2391,18 @@ with st.expander("自定义更表规则（小组）"):
                         g["rule_type"] = edited_rule_type
                         g["active"] = bool(edited_active)
                         g["headcount_planned"] = int(edited_headcount) if edited_headcount else None
-                        members_clean = list(dict.fromkeys([m for m in edited_members if m in employee_names]))
-                        backups_clean = [
-                            m for m in edited_backup_members if m in employee_names and m not in members_clean
-                        ]
+                        name_lookup = {str(n).strip(): n for n in employee_names if str(n).strip()}
+                        members_clean = [name_lookup.get(str(m).strip()) for m in edited_members]
+                        members_clean = [m for m in members_clean if m]
+                        members_clean = list(dict.fromkeys(members_clean))
+                        backups_clean = [name_lookup.get(str(m).strip()) for m in edited_backup_members]
+                        backups_clean = [m for m in backups_clean if m]
                         backups_clean = list(dict.fromkeys(backups_clean))
+                        overlap = sorted(set(members_clean) & set(backups_clean))
+                        if overlap:
+                            st.error("成员与备选不能重复：" + "、".join(overlap))
+                            st.stop()
+                        backups_clean = [m for m in backups_clean if m not in members_clean]
                         g["members"] = members_clean
                         g["backup_members"] = backups_clean
                         g["requirements_windows"] = new_windows
