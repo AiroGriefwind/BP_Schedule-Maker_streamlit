@@ -20,10 +20,13 @@ from scheduling_logic import (
     add_employee,
     edit_employee,
     delete_employee,
+    restore_employees_from_storage,
+    save_employees_to_storage_only,
     export_availability_to_excel,
     clear_availability,
     sync_availability,
     get_last_generated_schedule,
+    load_role_rules,
     EMPLOYEES,
     ROLE_RULES,
 )
@@ -155,19 +158,24 @@ st.title(get_app_title("Auto-Schedule Maker"))
 if st.button("Upload Initial Data to Firebase"):
     fm.upload_initial_data()
 
+
 # --- State Management ---
+def refresh_master_data():
+    """Refresh employees/role rules/group rules from Firebase and sync availability."""
+    load_role_rules()
+    st.session_state.employees = load_employees()
+    st.session_state.group_rules = load_group_rules()
+    # Sync employees with availability data
+    sync_availability()
+    st.session_state.availability = load_data()
+
+
 def initialize_session_state():
     """Load initial data into the session state."""
     if not st.session_state.get('initialized'):
         st.session_state.start_date = datetime(2025, 3, 17)
-        st.session_state.employees = load_employees()
-        
-        # Sync employees with availability data
-        sync_availability() 
-        
-        st.session_state.availability = load_data()
-        st.session_state.group_rules = load_group_rules()
-        
+        refresh_master_data()
+
         if not st.session_state.availability:
             st.session_state.availability = init_availability(
                 st.session_state.start_date, st.session_state.employees
@@ -393,6 +401,7 @@ def _time_window_to_minutes(start: str, end: str) -> Tuple[int, int]:
 def validate_group_coverage_from_availability(
     availability: Dict[str, Dict[str, Any]],
     group: Dict[str, Any],
+    group_rules: Optional[Dict[str, Any]] = None,
     step_minutes: int = 60,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
@@ -404,6 +413,9 @@ def validate_group_coverage_from_availability(
     """
     members = [m for m in (group.get("members") or []) if m]
     windows = group.get("requirements_windows") or []
+    current_rule_type = str(group.get("rule_type") or "routine").strip().lower()
+    if current_rule_type not in {"routine", "task"}:
+        current_rule_type = "routine"
 
     # Pre-parse availability intervals per date/member
     parsed: Dict[str, Dict[str, List[Tuple[int, int]]]] = {}
@@ -450,6 +462,20 @@ def validate_group_coverage_from_availability(
                     continue
                 on = []
                 for m in members:
+                    # Routine rule: members can only take one routine at a time.
+                    # If this member is already occupied by a higher-priority routine group,
+                    # they cannot be counted for this routine group.
+                    if current_rule_type == "routine":
+                        conflict_group = _member_conflict_group_name(
+                            member=m,
+                            date_obj=d,
+                            slot_s=slot_s,
+                            slot_e=slot_e,
+                            current_group=group,
+                            group_rules=group_rules or {},
+                        )
+                        if conflict_group:
+                            continue
                     for is0, ie0 in parsed[date_key].get(m, []):
                         # any overlap counts
                         if max(is0, slot_s) < min(ie0, slot_e):
@@ -589,7 +615,8 @@ def _build_week_bins_from_dates(date_keys: List[str]) -> List[Dict[str, Any]]:
     max_d = dts[-1].date()
     have = set([x.date() for x in dts])
     bins: List[Dict[str, Any]] = []
-    cur = min_d
+    # Align bins to calendar week (Mon..Sun) to avoid date order "jumping" in the heatmap.
+    cur = min_d - timedelta(days=min_d.weekday())
     while cur <= max_d:
         end = min(cur + timedelta(days=6), max_d)
         dates_in = [cur + timedelta(days=i) for i in range((end - cur).days + 1) if (cur + timedelta(days=i)) in have]
@@ -746,35 +773,64 @@ def _member_conflict_group_name(
     date_obj: datetime,
     slot_s: int,
     slot_e: int,
-    current_group_name: str,
+    current_group: Dict[str, Any],
     group_rules: Dict[str, Any],
-    current_priority: int,
 ) -> Optional[str]:
     """
-    Reserve interface for 'super employee' / cross-group priorities.
-
-    If a member belongs to another group with higher priority, and that group's
-    requirement windows cover this date/time slot, we mark the member as
-    conflicted by that group (meaning: their time should be considered unavailable
-    to the current group).
+    Routine-only conflict rule:
+    - A member can only be counted for ONE routine at the same time.
+    - For now, "priority" is inferred by group order in group_rules (earlier = higher).
+    - Task rules never conflict with routine or task.
     """
     try:
         groups = (group_rules or {}).get("groups", []) or []
     except Exception:
         groups = []
-    for g in groups:
+
+    current_rule_type = str(current_group.get("rule_type") or "routine").strip().lower()
+    if current_rule_type not in {"routine", "task"}:
+        current_rule_type = "routine"
+    if current_rule_type != "routine":
+        return None
+
+    def _gkey(g: Dict[str, Any]) -> str:
+        return str(g.get("id") or g.get("name") or "").strip()
+
+    cur_key = _gkey(current_group)
+    cur_idx = None
+    for i, g in enumerate(groups):
+        if _gkey(g) == cur_key:
+            cur_idx = i
+            break
+
+    # If we can't find the current group in the list, skip conflicts to avoid false negatives.
+    if cur_idx is None:
+        return None
+
+    for i, g in enumerate(groups):
         try:
-            gname = str(g.get("name") or "").strip()
-            if not gname or gname == current_group_name:
+            if i >= cur_idx:
                 continue
-            gprio = int(g.get("priority") or 0)
-            if gprio <= int(current_priority or 0):
+            gname = str(g.get("name") or "").strip()
+            if not gname:
+                continue
+            g_rule_type = str(g.get("rule_type") or "routine").strip().lower()
+            if g_rule_type not in {"routine", "task"}:
+                g_rule_type = "routine"
+            if g_rule_type != "routine":
+                continue
+            if not bool(g.get("active", True)):
                 continue
             members = g.get("members") or []
             if member not in members:
                 continue
             windows = g.get("requirements_windows") or []
             for w in windows:
+                try:
+                    if int(w.get("min_staff") or 0) <= 0:
+                        continue
+                except Exception:
+                    pass
                 day_type = str(w.get("day_type") or "all").strip().lower()
                 if not _day_type_applies_ui(day_type, date_obj):
                     continue
@@ -803,8 +859,9 @@ def _build_cell_member_detail_df(
     Shows raw imported cell value verbatim in parentheses.
     """
     members = [m for m in (group.get("members") or []) if m]
-    current_group_name = str(group.get("name") or "").strip()
-    current_priority = int(group.get("priority") or 0)
+    current_rule_type = str(group.get("rule_type") or "routine").strip().lower()
+    if current_rule_type not in {"routine", "task"}:
+        current_rule_type = "routine"
 
     try:
         date_obj = pd.to_datetime(date_key).to_pydatetime()
@@ -827,9 +884,8 @@ def _build_cell_member_detail_df(
             date_obj=date_obj,
             slot_s=slot_s,
             slot_e=slot_e,
-            current_group_name=current_group_name,
+            current_group=group,
             group_rules=group_rules,
-            current_priority=current_priority,
         )
 
         # Leave-like raw values first (AL/SL/...)
@@ -838,7 +894,7 @@ def _build_cell_member_detail_df(
             detail = f"{raw_s}" if raw_s else ""
         # Then conflict (higher priority group) overrides "到岗"
         elif conflict_group:
-            status = "无优先级"
+            status = "被例行占用"
             if raw_s:
                 detail = f"{raw_s}（{conflict_group}）"
             else:
@@ -853,6 +909,103 @@ def _build_cell_member_detail_df(
         rows.append({"成员": m, "状态": status, "明细": detail})
 
     return pd.DataFrame(rows)
+
+
+# -----------------------------
+# Group member helpers (members vs backups)
+# -----------------------------
+_GROUP_MEMBER_TYPE_LABELS = {"member": "通常成员", "backup": "备选成员"}
+
+
+def _normalize_member_list(values: Any) -> List[str]:
+    if not isinstance(values, list):
+        values = []
+    cleaned = [str(x).strip() for x in values if str(x).strip()]
+    seen = set()
+    return [m for m in cleaned if not (m in seen or seen.add(m))]
+
+
+def _get_employee_group_assignments(employee_name: str, group_rules: Dict[str, Any]) -> List[Dict[str, str]]:
+    assignments: List[Dict[str, str]] = []
+    for g in (group_rules or {}).get("groups", []) or []:
+        gname = str(g.get("name") or "").strip()
+        if not gname:
+            continue
+        members = g.get("members", []) or []
+        backups = g.get("backup_members", []) or []
+        if employee_name in members:
+            assignments.append({"小组": gname, "成员类型": _GROUP_MEMBER_TYPE_LABELS["member"]})
+        if employee_name in backups:
+            confirm = {"小组": gname, "成员类型": _GROUP_MEMBER_TYPE_LABELS["backup"]}
+            assignments.append(confirm)
+    return assignments
+
+
+def _apply_employee_group_assignments(
+    employee_name: str,
+    assignments: List[Dict[str, Any]],
+    group_rules: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[str], bool]:
+    warnings: List[str] = []
+    changed = False
+    if not employee_name:
+        return group_rules, warnings, changed
+
+    groups = (group_rules or {}).get("groups", []) or []
+    name_to_group = {str(g.get("name") or "").strip(): g for g in groups if str(g.get("name") or "").strip()}
+
+    # Remove existing memberships first (treat assignments as the full desired list).
+    for g in groups:
+        members = g.get("members", []) or []
+        backups = g.get("backup_members", []) or []
+        if employee_name in members:
+            g["members"] = [m for m in members if m != employee_name]
+            changed = True
+        if employee_name in backups:
+            g["backup_members"] = [m for m in backups if m != employee_name]
+            changed = True
+
+    seen_groups = set()
+    for row in assignments or []:
+        if not isinstance(row, dict):
+            continue
+        gname = str(row.get("小组") or "").strip()
+        pool_label = str(row.get("成员类型") or "").strip()
+        if not gname:
+            continue
+        if gname in seen_groups:
+            warnings.append(f"小组“{gname}”在列表中重复，已保留第一条。")
+            continue
+        seen_groups.add(gname)
+        g = name_to_group.get(gname)
+        if not g:
+            warnings.append(f"未找到小组“{gname}”，已跳过。")
+            continue
+        target_key = "members"
+        if pool_label == _GROUP_MEMBER_TYPE_LABELS["backup"]:
+            target_key = "backup_members"
+        elif pool_label and pool_label != _GROUP_MEMBER_TYPE_LABELS["member"]:
+            warnings.append(f"小组“{gname}”的成员类型无效，已按通常成员处理。")
+        cur = _normalize_member_list(g.get(target_key) or [])
+        if employee_name not in cur:
+            cur.append(employee_name)
+            g[target_key] = cur
+            changed = True
+        other_key = "backup_members" if target_key == "members" else "members"
+        other = _normalize_member_list(g.get(other_key) or [])
+        if employee_name in other:
+            g[other_key] = [m for m in other if m != employee_name]
+            changed = True
+
+    # Final cleanup: de-dup + remove overlaps
+    for g in groups:
+        members = _normalize_member_list(g.get("members") or [])
+        backups = _normalize_member_list(g.get("backup_members") or [])
+        backups = [m for m in backups if m not in members]
+        g["members"] = members
+        g["backup_members"] = backups
+
+    return group_rules, warnings, changed
 
 
 # -----------------------------
@@ -1102,16 +1255,30 @@ def merge_edited_df_with_color(edited_df, orig_availability):
     and the original nested-availability dict with color+value,
     return a new nested dict with new values but colors preserved/retained.
     """
+    if edited_df is None or edited_df.empty:
+        return orig_availability or {}
+
     result = {}
-    edited_df_nodate = edited_df.set_index("Date")
+    if "Date" in edited_df.columns:
+        edited_df_nodate = edited_df.set_index("Date")
+    else:
+        edited_df_nodate = edited_df.copy()
+
     for date, row in edited_df_nodate.iterrows():
-        result[date] = {}
-        for emp in row.index:
-            new_val = row[emp]
-            orig_cell = orig_availability.get(date, {}).get(emp, {})
+        date_key = str(date)
+        result[date_key] = {}
+        for emp, new_val in row.items():
+            if isinstance(new_val, float) and pd.isna(new_val):
+                new_val = ""
+            if new_val is None:
+                new_val = ""
+            if not isinstance(new_val, str):
+                new_val = str(new_val)
+            new_val = new_val.strip()
+            orig_cell = orig_availability.get(date_key, {}).get(emp, {})
             cell_color = orig_cell.get("color")
             cell_font = orig_cell.get("font_color")
-            result[date][emp] = {"value": new_val, "color": cell_color, "font_color": cell_font}
+            result[date_key][emp] = {"value": new_val, "color": cell_color, "font_color": cell_font}
     return result
 
 
@@ -1246,6 +1413,7 @@ def dataframe_to_availability(edited_df):
 
 # --- Initialization ---
 initialize_session_state()
+
 availability_df = availability_to_dataframe()
 availability_color_css_df = availability_to_color_css_dataframe()
 
@@ -1346,7 +1514,7 @@ if st.sidebar.button("Save All Changes", type="primary"):
         # Step 2: Save to session state and file
         st.session_state.availability = merged_availability
         save_data(st.session_state.availability)
-        save_employees()
+        save_employees(st.session_state.employees)
         st.toast("💾 All changes saved to server files!")
 
 # Explicit save for imported availability (clarify persistence for users)
@@ -1420,6 +1588,19 @@ st.title("Employee Availability Editor")
 
 # --- Employee Management Section ---
 with st.expander("Manage Employees"):
+    action_cols = st.columns([1, 1, 2])
+    with action_cols[0]:
+        if st.button("刷新"):
+            with st.spinner("Refreshing from Firebase..."):
+                refresh_master_data()
+            st.toast("🔄 已刷新员工/角色规则，并同步 availability。")
+            st.rerun()
+    with action_cols[1]:
+        if st.button("手动保存"):
+            with st.spinner("Saving employees to Storage..."):
+                save_employees_to_storage_only(st.session_state.employees)
+            st.toast("💾 员工已保存到 Storage/config/employees.json。")
+
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Add New Employee")
@@ -1430,9 +1611,43 @@ with st.expander("Manage Employees"):
             add_end_time = ""
             if '-' in add_start_time:
                 add_start_time, add_end_time = add_start_time.split('-')
+
+            group_rules_state = st.session_state.get("group_rules") or GROUP_RULES
+            group_names = [g.get("name") for g in group_rules_state.get("groups", []) if g.get("name")]
+            add_group_df = pd.DataFrame(columns=["小组", "成员类型"])
+            if group_names:
+                st.markdown("**小组分配（可选）**")
+                st.caption("可为该员工选择多个小组，并指定为“通常成员”或“备选成员”。")
+                add_group_df = st.data_editor(
+                    add_group_df,
+                    num_rows="dynamic",
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "小组": st.column_config.SelectboxColumn("小组", options=group_names, required=True),
+                        "成员类型": st.column_config.SelectboxColumn(
+                            "成员类型",
+                            options=list(_GROUP_MEMBER_TYPE_LABELS.values()),
+                            required=True,
+                        ),
+                    },
+                    key="add_employee_group_assignments",
+                )
+            else:
+                st.caption("暂无小组规则，创建后可在员工信息中分配。")
             
             if st.form_submit_button("Add Employee"):
                 add_employee(add_name, add_role, start_time=add_start_time, end_time=add_end_time)
+                if group_names:
+                    assignments = add_group_df.to_dict("records") if isinstance(add_group_df, pd.DataFrame) else []
+                    updated_rules, warnings, changed = _apply_employee_group_assignments(
+                        add_name.strip(), assignments, group_rules_state
+                    )
+                    if changed:
+                        st.session_state.group_rules = updated_rules
+                        save_group_rules(updated_rules)
+                    for w in warnings:
+                        st.warning(w)
                 st.toast(f"✅ Employee '{add_name}' added.")
                 st.session_state.initialized = False
                 st.rerun()
@@ -1450,11 +1665,50 @@ with st.expander("Manage Employees"):
                 new_name = st.text_input("New Name", value=emp_to_edit.name)
                 new_role = st.selectbox("New Role", list(ROLE_RULES.keys()), index=list(ROLE_RULES.keys()).index(emp_to_edit.employee_type))
                 new_shift = st.text_input("New Shift (e.g., 10-19)", value=f"{emp_to_edit.start_time}-{emp_to_edit.end_time}" if emp_to_edit.start_time else "")
+
+                group_rules_state = st.session_state.get("group_rules") or GROUP_RULES
+                group_names = [g.get("name") for g in group_rules_state.get("groups", []) if g.get("name")]
+                edit_group_df = pd.DataFrame(_get_employee_group_assignments(emp_to_edit.name, group_rules_state))
+                if edit_group_df.empty:
+                    edit_group_df = pd.DataFrame(columns=["小组", "成员类型"])
+                if group_names:
+                    st.markdown("**小组分配（可选）**")
+                    st.caption("每行代表该员工在一个小组中的身份。")
+                    edit_group_df = st.data_editor(
+                        edit_group_df,
+                        num_rows="dynamic",
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "小组": st.column_config.SelectboxColumn("小组", options=group_names, required=True),
+                            "成员类型": st.column_config.SelectboxColumn(
+                                "成员类型",
+                                options=list(_GROUP_MEMBER_TYPE_LABELS.values()),
+                                required=True,
+                            ),
+                        },
+                        key=f"edit_employee_group_assignments_{emp_to_edit.name}",
+                    )
+                else:
+                    st.caption("暂无小组规则，创建后可在员工信息中分配。")
                 
                 submitted = st.form_submit_button("Update Employee")
                 if submitted:
                     start_time, end_time = (new_shift.split('-') if '-' in new_shift else (None, None))
                     edit_employee(emp_to_edit.name, new_name, new_role, new_start_time=start_time, new_end_time=end_time)
+                    if group_names:
+                        assignments = edit_group_df.to_dict("records") if isinstance(edit_group_df, pd.DataFrame) else []
+                        name_for_groups = new_name.strip() if new_name.strip() else emp_to_edit.name
+                        updated_rules, warnings, changed = _apply_employee_group_assignments(
+                            name_for_groups,
+                            assignments,
+                            group_rules_state,
+                        )
+                        if changed:
+                            st.session_state.group_rules = updated_rules
+                            save_group_rules(updated_rules)
+                        for w in warnings:
+                            st.warning(w)
                     st.toast(f"✅ Employee '{new_name}' updated.")
                     st.session_state.initialized = False
                     st.rerun()
@@ -1587,6 +1841,16 @@ with st.expander("自定义更表规则（小组）"):
 
     group_rules = st.session_state.get("group_rules") or GROUP_RULES
     groups = group_rules.get("groups", [])
+    # --- Rule type labels (routine/task) ---
+    # Choose Chinese-friendly names while keeping stored values stable: "routine" | "task".
+    _GROUP_RULE_TYPE_LABELS = {
+        "routine": "例行工作（Routine）",
+        "task": "临时任务（Task）",
+    }
+    _GROUP_RULE_TYPE_HELP = (
+        "例行工作：需要专注、耗时较长的日常办公工作（后续会支持只有特定员工可同时承担多项例行工作）。\n\n"
+        "临时任务：碎片化但重要的小事，通常办公室时间内完成，组内被标记成员一般都可同时处理。"
+    )
 
     # --- Validate group coverage based on imported "total sheet" (availability) ---
     st.subheader("验证小组需求（基于已导入的总表）")
@@ -1607,7 +1871,10 @@ with st.expander("自定义更表规则（小组）"):
             else:
                 with st.spinner("正在按 60 分钟时段校验覆盖..."):
                     summary_df, deficits_df, all_checked_df = validate_group_coverage_from_availability(
-                        st.session_state.availability, gsel, step_minutes=60
+                        st.session_state.availability,
+                        gsel,
+                        group_rules=st.session_state.get("group_rules") or GROUP_RULES,
+                        step_minutes=60,
                     )
                 # Build week bins from imported dates
                 date_keys = []
@@ -1669,6 +1936,27 @@ with st.expander("自定义更表规则（小组）"):
                     week_start = datetime.fromisoformat(str(wb["start_date"])).date() if isinstance(wb.get("start_date"), str) else wb.get("start_date")
                     week_end = datetime.fromisoformat(str(wb["end_date"])).date() if isinstance(wb.get("end_date"), str) else wb.get("end_date")
 
+                    # Title + subtitle (group name + date range + members/backups)
+                    group_name = str(gsel.get("name") or "").strip()
+                    start_label = week_start.strftime("%d/%m/%Y") if week_start else ""
+                    end_label = week_end.strftime("%d/%m/%Y") if week_end else ""
+                    members_list = [str(m) for m in (gsel.get("members") or []) if str(m).strip()]
+                    members_label = ", ".join(members_list) if members_list else "无"
+                    backups_list = [str(m) for m in (gsel.get("backup_members") or []) if str(m).strip()]
+                    backups_label = ", ".join(backups_list) if backups_list else "无"
+                    st.markdown(
+                        f"""
+                        <div style="font-size: 20px; font-weight: 600; margin-top: 8px;">
+                          {group_name}: {start_label} - {end_label}
+                        </div>
+                        <div style="font-size: 14px; color: #6b7280; margin-bottom: 6px;">
+                          员工：{members_label}<br/>
+                          后备：{backups_label}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
                     grid_df = _build_week_grid_df(
                         all_checked_df=all_checked_df,
                         week_start=week_start,
@@ -1708,12 +1996,32 @@ with st.expander("自定义更表规则（小组）"):
                     st.caption("点击热力图任意一格，下方明细会自动切换到该格对应的日期+时间。")
                     if alt is not None and not grid_df.empty:
                         sel_param = alt.selection_point(fields=["date", "time"], on="click", empty=False, name="cell")
-                        chart = (
+                        time_sort = sorted(grid_df["time"].unique())
+                        chart_top = (
+                            alt.Chart(grid_df)
+                            .mark_rect(opacity=0)
+                            .encode(
+                                x=alt.X(
+                                    "weekday:N",
+                                    sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+                                    title=None,
+                                    axis=alt.Axis(orient="top", labelAngle=0),
+                                ),
+                                y=alt.Y("time:N", sort=time_sort, title=None, axis=None),
+                            )
+                            .properties(height=30)
+                        )
+                        chart_main = (
                             alt.Chart(grid_df)
                             .mark_rect()
                             .encode(
-                                x=alt.X("weekday:N", sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"], title=None),
-                                y=alt.Y("time:N", sort=sorted(grid_df["time"].unique(), reverse=True), title=None),
+                                x=alt.X(
+                                    "weekday:N",
+                                    sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+                                    title=None,
+                                    axis=alt.Axis(labelAngle=0),
+                                ),
+                                y=alt.Y("time:N", sort=time_sort, title=None),
                                 color=alt.Color(
                                     "status:N",
                                     scale=alt.Scale(domain=["na", "ok", "deficit"], range=["#f3f4f6", "#d9f2d9", "#f8d7da"]),
@@ -1733,14 +2041,16 @@ with st.expander("自定义更表规则（小组）"):
                         )
                         # attempt to get selection payload from Streamlit (version-dependent)
                         try:
-                            evt = st.altair_chart(chart, use_container_width=True, on_select="rerun", key="validate_group_week_heatmap")
+                            st.altair_chart(chart_top, use_container_width=True, key="validate_group_week_heatmap_top")
+                            evt = st.altair_chart(chart_main, use_container_width=True, on_select="rerun", key="validate_group_week_heatmap")
                             got = _extract_date_time_from_obj(evt)
                             if got:
                                 st.session_state["_validate_selected_cell"] = {"date": got[0], "time": got[1]}
                                 sel_date, sel_time = got[0], got[1]
                         except TypeError:
                             # older Streamlit: no on_select support
-                            st.altair_chart(chart, use_container_width=True)
+                            st.altair_chart(chart_top, use_container_width=True, key="validate_group_week_heatmap_top")
+                            st.altair_chart(chart_main, use_container_width=True)
                     else:
                         # fallback
                         st.dataframe(
@@ -1822,31 +2132,45 @@ with st.expander("自定义更表规则（小组）"):
 
     # Overview
     if groups:
-        st.markdown("**概览（点击“成员”可展开查看）**")
-        header_cols = st.columns([2, 4, 1, 1])
+        st.markdown("**概览（点击“成员/备选”可展开查看）**")
+        header_cols = st.columns([2, 2, 4, 1, 1, 1])
         header_cols[0].markdown("**名称**")
-        header_cols[1].markdown("**成员**")
-        header_cols[2].markdown("**成员数**")
-        header_cols[3].markdown("**规则段数**")
+        header_cols[1].markdown("**类型**")
+        header_cols[2].markdown("**成员/备选**")
+        header_cols[3].markdown("**成员数**")
+        header_cols[4].markdown("**备选数**")
+        header_cols[5].markdown("**规则段数**")
 
         for g in groups:
             name = g.get("name")
+            rt = str(g.get("rule_type") or "routine").strip().lower()
+            rt = rt if rt in _GROUP_RULE_TYPE_LABELS else "routine"
+            rt_label = _GROUP_RULE_TYPE_LABELS.get(rt, rt)
             members = g.get("members", []) or []
+            backups = g.get("backup_members", []) or []
             rules = g.get("requirements_windows", []) or []
             member_count = len(members)
+            backup_count = len(backups)
             rules_count = len(rules)
 
-            row_cols = st.columns([2, 4, 1, 1], vertical_alignment="center")
+            row_cols = st.columns([2, 2, 4, 1, 1, 1], vertical_alignment="center")
             with row_cols[0]:
                 st.write(name)
             with row_cols[1]:
-                with st.expander(f"成员（{member_count}）", expanded=False):
+                st.caption(rt_label)
+            with row_cols[2]:
+                with st.expander(f"成员/备选（{member_count}/{backup_count}）", expanded=False):
                     if members:
-                        st.write("、".join(members))
+                        st.write("成员：" + "、".join(members))
                     else:
-                        st.caption("（无成员）")
-            row_cols[2].write(member_count)
-            row_cols[3].write(rules_count)
+                        st.caption("成员：（无）")
+                    if backups:
+                        st.write("备选：" + "、".join(backups))
+                    else:
+                        st.caption("备选：（无）")
+            row_cols[3].write(member_count)
+            row_cols[4].write(backup_count)
+            row_cols[5].write(rules_count)
     else:
         st.info("当前还没有任何小组。你可以在下面创建一个。")
 
@@ -1856,9 +2180,22 @@ with st.expander("自定义更表规则（小组）"):
     with st.form("create_group_form", clear_on_submit=True):
         new_name = st.text_input("小组名称（必填）")
         new_desc = st.text_input("备注/说明（可选）")
+        new_rule_type_label = st.selectbox(
+            "规则类型（必选）",
+            options=[_GROUP_RULE_TYPE_LABELS["routine"], _GROUP_RULE_TYPE_LABELS["task"]],
+            index=0,
+            help=_GROUP_RULE_TYPE_HELP,
+        )
+        new_rule_type = "routine" if new_rule_type_label == _GROUP_RULE_TYPE_LABELS["routine"] else "task"
         new_active = st.checkbox("启用", value=True)
         new_headcount = st.number_input("规划人数（可选）", min_value=0, value=0, step=1)
         new_members = st.multiselect("成员（从现有员工中选择）", options=employee_names, default=[])
+        new_backup_members = st.multiselect(
+            "备选成员（从现有员工中选择）",
+            options=[e for e in employee_names if e not in new_members],
+            default=[],
+        )
+        st.caption("同一员工不可同时出现在成员与备选中。")
 
         st.markdown("规则段（可多段）：每一段表示在该时间窗内，每个小时至少需要多少名成员在岗。")
         st.caption("day_type 建议：all=每天；mon..sun=周一..周日。start/end 为 30 分钟刻度，end 可选 24:00。")
@@ -1896,13 +2233,28 @@ with st.expander("自定义更表规则（小组）"):
                         st.error("规则段存在问题，请修正后再提交：\n\n- " + "\n- ".join(win_errors))
                         st.stop()
 
+                    name_lookup = {str(n).strip(): n for n in employee_names if str(n).strip()}
+                    primary_members = [name_lookup.get(str(m).strip()) for m in new_members]
+                    primary_members = [m for m in primary_members if m]
+                    primary_members = list(dict.fromkeys(primary_members))
+                    backup_members = [name_lookup.get(str(m).strip()) for m in new_backup_members]
+                    backup_members = [m for m in backup_members if m]
+                    backup_members = list(dict.fromkeys(backup_members))
+                    overlap = sorted(set(primary_members) & set(backup_members))
+                    if overlap:
+                        st.error("成员与备选不能重复：" + "、".join(overlap))
+                        st.stop()
+                    backup_members = [m for m in backup_members if m not in primary_members]
+
                     new_group = {
                         "id": uuid.uuid4().hex,
                         "name": new_name.strip(),
                         "description": new_desc.strip(),
+                        "rule_type": new_rule_type,
                         "active": bool(new_active),
                         "headcount_planned": int(new_headcount) if new_headcount else None,
-                        "members": list(new_members),
+                        "members": primary_members,
+                        "backup_members": backup_members,
                         "requirements_windows": windows,
                     }
                     group_rules.setdefault("groups", []).append(new_group)
@@ -1938,6 +2290,17 @@ with st.expander("自定义更表规则（小组）"):
             with edit_cols[0]:
                 edited_name = st.text_input("小组名称", value=g.get("name", ""), key=f"{key_prefix}name")
                 edited_desc = st.text_input("备注/说明", value=g.get("description", ""), key=f"{key_prefix}desc")
+                cur_rt = str(g.get("rule_type") or "routine").strip().lower()
+                if cur_rt not in _GROUP_RULE_TYPE_LABELS:
+                    cur_rt = "routine"
+                edited_rule_type_label = st.selectbox(
+                    "规则类型",
+                    options=[_GROUP_RULE_TYPE_LABELS["routine"], _GROUP_RULE_TYPE_LABELS["task"]],
+                    index=0 if cur_rt == "routine" else 1,
+                    key=f"{key_prefix}rule_type",
+                    help=_GROUP_RULE_TYPE_HELP,
+                )
+                edited_rule_type = "routine" if edited_rule_type_label == _GROUP_RULE_TYPE_LABELS["routine"] else "task"
                 edited_active = st.checkbox("启用", value=bool(g.get("active", True)), key=f"{key_prefix}active")
                 edited_headcount = st.number_input(
                     "规划人数（可选）",
@@ -1946,12 +2309,27 @@ with st.expander("自定义更表规则（小组）"):
                     step=1,
                     key=f"{key_prefix}headcount",
                 )
+                default_members = [m for m in (g.get("members") or []) if m in employee_names]
+                default_backups = [
+                    m
+                    for m in (g.get("backup_members") or [])
+                    if m in employee_names and m not in default_members
+                ]
                 edited_members = st.multiselect(
                     "成员（从现有员工中选择）",
                     options=employee_names,
-                    default=[m for m in (g.get("members") or []) if m in employee_names],
+                    default=default_members,
                     key=f"{key_prefix}members",
                 )
+                backup_options = [e for e in employee_names if e not in edited_members]
+                default_backups = [m for m in default_backups if m in backup_options]
+                edited_backup_members = st.multiselect(
+                    "备选成员（从现有员工中选择）",
+                    options=backup_options,
+                    default=default_backups,
+                    key=f"{key_prefix}backup_members",
+                )
+                st.caption("同一员工不可同时出现在成员与备选中。")
 
             with edit_cols[1]:
                 windows_df = pd.DataFrame(g.get("requirements_windows") or [])
@@ -1999,9 +2377,23 @@ with st.expander("自定义更表规则（小组）"):
 
                         g["name"] = new_name_norm
                         g["description"] = edited_desc.strip()
+                        g["rule_type"] = edited_rule_type
                         g["active"] = bool(edited_active)
                         g["headcount_planned"] = int(edited_headcount) if edited_headcount else None
-                        g["members"] = list(edited_members)
+                        name_lookup = {str(n).strip(): n for n in employee_names if str(n).strip()}
+                        members_clean = [name_lookup.get(str(m).strip()) for m in edited_members]
+                        members_clean = [m for m in members_clean if m]
+                        members_clean = list(dict.fromkeys(members_clean))
+                        backups_clean = [name_lookup.get(str(m).strip()) for m in edited_backup_members]
+                        backups_clean = [m for m in backups_clean if m]
+                        backups_clean = list(dict.fromkeys(backups_clean))
+                        overlap = sorted(set(members_clean) & set(backups_clean))
+                        if overlap:
+                            st.error("成员与备选不能重复：" + "、".join(overlap))
+                            st.stop()
+                        backups_clean = [m for m in backups_clean if m not in members_clean]
+                        g["members"] = members_clean
+                        g["backup_members"] = backups_clean
                         g["requirements_windows"] = new_windows
 
                         st.session_state.group_rules = group_rules
