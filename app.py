@@ -614,7 +614,8 @@ def _build_week_bins_from_dates(date_keys: List[str]) -> List[Dict[str, Any]]:
     max_d = dts[-1].date()
     have = set([x.date() for x in dts])
     bins: List[Dict[str, Any]] = []
-    cur = min_d
+    # Align bins to calendar week (Mon..Sun) to avoid date order "jumping" in the heatmap.
+    cur = min_d - timedelta(days=min_d.weekday())
     while cur <= max_d:
         end = min(cur + timedelta(days=6), max_d)
         dates_in = [cur + timedelta(days=i) for i in range((end - cur).days + 1) if (cur + timedelta(days=i)) in have]
@@ -1778,6 +1779,26 @@ with st.expander("自定义更表规则（小组）"):
                     week_start = datetime.fromisoformat(str(wb["start_date"])).date() if isinstance(wb.get("start_date"), str) else wb.get("start_date")
                     week_end = datetime.fromisoformat(str(wb["end_date"])).date() if isinstance(wb.get("end_date"), str) else wb.get("end_date")
 
+                    # Title + subtitle (group name + date range + members/backups)
+                    group_name = str(gsel.get("name") or "").strip()
+                    start_label = week_start.strftime("%d/%m/%Y") if week_start else ""
+                    end_label = week_end.strftime("%d/%m/%Y") if week_end else ""
+                    members_list = [str(m) for m in (gsel.get("members") or []) if str(m).strip()]
+                    members_label = ", ".join(members_list) if members_list else "无"
+                    backups_label = "无"
+                    st.markdown(
+                        f"""
+                        <div style="font-size: 20px; font-weight: 600; margin-top: 8px;">
+                          {group_name}: {start_label} - {end_label}
+                        </div>
+                        <div style="font-size: 14px; color: #6b7280; margin-bottom: 6px;">
+                          员工：{members_label}<br/>
+                          后备：{backups_label}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
                     grid_df = _build_week_grid_df(
                         all_checked_df=all_checked_df,
                         week_start=week_start,
@@ -1817,25 +1838,46 @@ with st.expander("自定义更表规则（小组）"):
                     st.caption("点击热力图任意一格，下方明细会自动切换到该格对应的日期+时间。")
                     if alt is not None and not grid_df.empty:
                         sel_param = alt.selection_point(fields=["date", "time"], on="click", empty=False, name="cell")
+                        time_sort = sorted(grid_df["time"].unique())
                         chart = (
-                            alt.Chart(grid_df)
-                            .mark_rect()
-                            .encode(
-                                x=alt.X("weekday:N", sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"], title=None),
-                                y=alt.Y("time:N", sort=sorted(grid_df["time"].unique(), reverse=True), title=None),
-                                color=alt.Color(
-                                    "status:N",
-                                    scale=alt.Scale(domain=["na", "ok", "deficit"], range=["#f3f4f6", "#d9f2d9", "#f8d7da"]),
-                                    legend=None,
+                            alt.layer(
+                                # base heatmap with bottom axis
+                                alt.Chart(grid_df)
+                                .mark_rect()
+                                .encode(
+                                    x=alt.X(
+                                        "weekday:N",
+                                        sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+                                        title=None,
+                                        axis=alt.Axis(labelAngle=0),
+                                    ),
+                                    y=alt.Y("time:N", sort=time_sort, title=None),
+                                    color=alt.Color(
+                                        "status:N",
+                                        scale=alt.Scale(domain=["na", "ok", "deficit"], range=["#f3f4f6", "#d9f2d9", "#f8d7da"]),
+                                        legend=None,
+                                    ),
+                                    tooltip=[
+                                        alt.Tooltip("date:N", title="日期"),
+                                        alt.Tooltip("weekday:N", title="周几"),
+                                        alt.Tooltip("time:N", title="时间格"),
+                                        alt.Tooltip("required:Q", title="required"),
+                                        alt.Tooltip("staffed:Q", title="staffed"),
+                                        alt.Tooltip("shortage:Q", title="shortage"),
+                                    ],
                                 ),
-                                tooltip=[
-                                    alt.Tooltip("date:N", title="日期"),
-                                    alt.Tooltip("weekday:N", title="周几"),
-                                    alt.Tooltip("time:N", title="时间格"),
-                                    alt.Tooltip("required:Q", title="required"),
-                                    alt.Tooltip("staffed:Q", title="staffed"),
-                                    alt.Tooltip("shortage:Q", title="shortage"),
-                                ],
+                                # top axis labels (no marks)
+                                alt.Chart(grid_df)
+                                .mark_rect(opacity=0)
+                                .encode(
+                                    x=alt.X(
+                                        "weekday:N",
+                                        sort=["周一", "周二", "周三", "周四", "周五", "周六", "周日"],
+                                        title=None,
+                                        axis=alt.Axis(orient="top", labelAngle=0),
+                                    ),
+                                    y=alt.Y("time:N", sort=time_sort, title=None, axis=None),
+                                ),
                             )
                             .add_params(sel_param)
                             .properties(height=720)
