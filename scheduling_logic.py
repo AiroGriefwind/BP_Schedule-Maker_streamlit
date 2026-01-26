@@ -722,15 +722,41 @@ def validate_synchronization():
                 f"Orphaned entry: {emp_name} on {date}"
 
 
+def _build_employee_group_assignments(group_rules):
+    """
+    Build a mapping: employee_name -> list of group assignments.
+    Each assignment: {"group": group_name, "member_type": "member"|"backup"}.
+    """
+    assignments = {}
+    groups = (group_rules or {}).get("groups", []) or []
+    for g in groups:
+        gname = str(g.get("name") or "").strip()
+        if not gname:
+            continue
+        for m in (g.get("members") or []):
+            name = str(m).strip()
+            if not name:
+                continue
+            assignments.setdefault(name, []).append({"group": gname, "member_type": "member"})
+        for m in (g.get("backup_members") or []):
+            name = str(m).strip()
+            if not name:
+                continue
+            assignments.setdefault(name, []).append({"group": gname, "member_type": "backup"})
+    return assignments
+
+
 def save_employees(employees=None):
     # Use passed list if provided; fall back to global cache
     source = employees if employees is not None else EMPLOYEES
+    group_assignments = _build_employee_group_assignments(GROUP_RULES)
     json_data = [{
         "name": emp.name,
         "role": emp.employee_type,
         "additional_roles": emp.additional_roles,
         "start_time": emp.start_time,
-        "end_time": emp.end_time
+        "end_time": emp.end_time,
+        "group_assignments": group_assignments.get(emp.name, []),
     } for emp in source]
     fm.save_data('employees', json_data)
     # Best-effort backup to Firebase Storage (optional)
