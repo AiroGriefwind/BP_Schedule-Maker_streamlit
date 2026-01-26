@@ -1587,6 +1587,16 @@ with st.expander("自定义更表规则（小组）"):
 
     group_rules = st.session_state.get("group_rules") or GROUP_RULES
     groups = group_rules.get("groups", [])
+    # --- Rule type labels (routine/task) ---
+    # Choose Chinese-friendly names while keeping stored values stable: "routine" | "task".
+    _GROUP_RULE_TYPE_LABELS = {
+        "routine": "例行工作（Routine）",
+        "task": "临时任务（Task）",
+    }
+    _GROUP_RULE_TYPE_HELP = (
+        "例行工作：需要专注、耗时较长的日常办公工作（后续会支持只有特定员工可同时承担多项例行工作）。\n\n"
+        "临时任务：碎片化但重要的小事，通常办公室时间内完成，组内被标记成员一般都可同时处理。"
+    )
 
     # --- Validate group coverage based on imported "total sheet" (availability) ---
     st.subheader("验证小组需求（基于已导入的总表）")
@@ -1823,30 +1833,36 @@ with st.expander("自定义更表规则（小组）"):
     # Overview
     if groups:
         st.markdown("**概览（点击“成员”可展开查看）**")
-        header_cols = st.columns([2, 4, 1, 1])
+        header_cols = st.columns([2, 2, 4, 1, 1])
         header_cols[0].markdown("**名称**")
-        header_cols[1].markdown("**成员**")
-        header_cols[2].markdown("**成员数**")
-        header_cols[3].markdown("**规则段数**")
+        header_cols[1].markdown("**类型**")
+        header_cols[2].markdown("**成员**")
+        header_cols[3].markdown("**成员数**")
+        header_cols[4].markdown("**规则段数**")
 
         for g in groups:
             name = g.get("name")
+            rt = str(g.get("rule_type") or "routine").strip().lower()
+            rt = rt if rt in _GROUP_RULE_TYPE_LABELS else "routine"
+            rt_label = _GROUP_RULE_TYPE_LABELS.get(rt, rt)
             members = g.get("members", []) or []
             rules = g.get("requirements_windows", []) or []
             member_count = len(members)
             rules_count = len(rules)
 
-            row_cols = st.columns([2, 4, 1, 1], vertical_alignment="center")
+            row_cols = st.columns([2, 2, 4, 1, 1], vertical_alignment="center")
             with row_cols[0]:
                 st.write(name)
             with row_cols[1]:
+                st.caption(rt_label)
+            with row_cols[2]:
                 with st.expander(f"成员（{member_count}）", expanded=False):
                     if members:
                         st.write("、".join(members))
                     else:
                         st.caption("（无成员）")
-            row_cols[2].write(member_count)
-            row_cols[3].write(rules_count)
+            row_cols[3].write(member_count)
+            row_cols[4].write(rules_count)
     else:
         st.info("当前还没有任何小组。你可以在下面创建一个。")
 
@@ -1856,6 +1872,13 @@ with st.expander("自定义更表规则（小组）"):
     with st.form("create_group_form", clear_on_submit=True):
         new_name = st.text_input("小组名称（必填）")
         new_desc = st.text_input("备注/说明（可选）")
+        new_rule_type_label = st.selectbox(
+            "规则类型（必选）",
+            options=[_GROUP_RULE_TYPE_LABELS["routine"], _GROUP_RULE_TYPE_LABELS["task"]],
+            index=0,
+            help=_GROUP_RULE_TYPE_HELP,
+        )
+        new_rule_type = "routine" if new_rule_type_label == _GROUP_RULE_TYPE_LABELS["routine"] else "task"
         new_active = st.checkbox("启用", value=True)
         new_headcount = st.number_input("规划人数（可选）", min_value=0, value=0, step=1)
         new_members = st.multiselect("成员（从现有员工中选择）", options=employee_names, default=[])
@@ -1900,6 +1923,7 @@ with st.expander("自定义更表规则（小组）"):
                         "id": uuid.uuid4().hex,
                         "name": new_name.strip(),
                         "description": new_desc.strip(),
+                        "rule_type": new_rule_type,
                         "active": bool(new_active),
                         "headcount_planned": int(new_headcount) if new_headcount else None,
                         "members": list(new_members),
@@ -1938,6 +1962,17 @@ with st.expander("自定义更表规则（小组）"):
             with edit_cols[0]:
                 edited_name = st.text_input("小组名称", value=g.get("name", ""), key=f"{key_prefix}name")
                 edited_desc = st.text_input("备注/说明", value=g.get("description", ""), key=f"{key_prefix}desc")
+                cur_rt = str(g.get("rule_type") or "routine").strip().lower()
+                if cur_rt not in _GROUP_RULE_TYPE_LABELS:
+                    cur_rt = "routine"
+                edited_rule_type_label = st.selectbox(
+                    "规则类型",
+                    options=[_GROUP_RULE_TYPE_LABELS["routine"], _GROUP_RULE_TYPE_LABELS["task"]],
+                    index=0 if cur_rt == "routine" else 1,
+                    key=f"{key_prefix}rule_type",
+                    help=_GROUP_RULE_TYPE_HELP,
+                )
+                edited_rule_type = "routine" if edited_rule_type_label == _GROUP_RULE_TYPE_LABELS["routine"] else "task"
                 edited_active = st.checkbox("启用", value=bool(g.get("active", True)), key=f"{key_prefix}active")
                 edited_headcount = st.number_input(
                     "规划人数（可选）",
@@ -1999,6 +2034,7 @@ with st.expander("自定义更表规则（小组）"):
 
                         g["name"] = new_name_norm
                         g["description"] = edited_desc.strip()
+                        g["rule_type"] = edited_rule_type
                         g["active"] = bool(edited_active)
                         g["headcount_planned"] = int(edited_headcount) if edited_headcount else None
                         g["members"] = list(edited_members)

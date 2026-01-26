@@ -144,6 +144,7 @@ def _normalize_group_rules(data):
           "id": "uuid",
           "name": "韩娱组",
           "description": "",
+          "rule_type": "routine|task",
           "active": true,
           "headcount_planned": 0 | null,
           "members": ["Alice", "Bob"],
@@ -171,6 +172,9 @@ def _normalize_group_rules(data):
         if not name:
             # Skip unnamed groups to avoid UI/logic ambiguity
             continue
+        rule_type_raw = str(g.get("rule_type") or "").strip().lower()
+        # Backward-compatible default: existing/legacy groups are treated as "routine".
+        rule_type = rule_type_raw if rule_type_raw in {"routine", "task"} else "routine"
         members = g.get("members") or []
         if not isinstance(members, list):
             members = []
@@ -187,8 +191,13 @@ def _normalize_group_rules(data):
             if not isinstance(w, dict):
                 continue
             day_type = _normalize_day_type(w.get("day_type") or "all")
-            start = str(w.get("start") or "00:00").strip()
-            end = str(w.get("end") or "24:00").strip()
+            start_raw = str(w.get("start") or "").strip()
+            end_raw = str(w.get("end") or "").strip()
+            # Treat "None"/"null" (often used as placeholders) as invalid and skip.
+            if start_raw.lower() in {"none", "null", "nan", ""} or end_raw.lower() in {"none", "null", "nan", ""}:
+                continue
+            start = start_raw
+            end = end_raw
             try:
                 min_staff = int(w.get("min_staff", 1))
             except Exception:
@@ -204,6 +213,7 @@ def _normalize_group_rules(data):
                 "id": gid,
                 "name": name,
                 "description": str(g.get("description") or ""),
+                "rule_type": rule_type,
                 "active": bool(g.get("active", True)),
                 "headcount_planned": g.get("headcount_planned", None),
                 "members": members,
