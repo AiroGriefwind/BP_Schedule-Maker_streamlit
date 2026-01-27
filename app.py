@@ -187,8 +187,8 @@ def initialize_session_state():
 
 # --- Helper Functions ---
 def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, delete_employee_fn):
-    st.markdown("**Main Shift Employee Import**")
-    main_shift_file = st.file_uploader("Upload Main Shift Excel", type=["xlsx"])
+    st.markdown("**导入总表（主更表）**")
+    main_shift_file = st.file_uploader("上传总表 Excel", type=["xlsx"])
     if not main_shift_file:
         return
 
