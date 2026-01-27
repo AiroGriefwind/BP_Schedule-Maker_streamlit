@@ -58,13 +58,13 @@ def render_group_rules_tab(
 
     action_cols = st.columns([1, 1, 2])
     with action_cols[0]:
-        if st.button("刷新"):
+        if st.button("刷新", key="group_rules_refresh"):
             with st.spinner("Refreshing from Firebase..."):
                 st.session_state.group_rules = load_group_rules()
             st.toast("🔄 已刷新小组规则。")
             st.rerun()
     with action_cols[1]:
-        if st.button("手动保存"):
+        if st.button("手动保存", key="group_rules_save"):
             with st.spinner("Saving group rules to Firebase..."):
                 save_group_rules(st.session_state.group_rules)
             st.toast("💾 小组规则已保存到 Firebase。")
