@@ -735,9 +735,9 @@ def normalize_windows_df_for_editor(df: pd.DataFrame) -> Tuple[pd.DataFrame, int
 
     # Drop invalid rows (empty start/end)
     def _ok(r):
-        return str(r.get("start", "")).strip() and str(r.get("end", "")).strip()
+        return bool(str(r.get("start", "")).strip()) and bool(str(r.get("end", "")).strip())
 
-    mask = out.apply(_ok, axis=1)
+    mask = out.apply(_ok, axis=1).astype(bool)
     dropped_bad = int((~mask).sum())
     out = out[mask]
     out = out.reset_index(drop=True)
