@@ -1,3 +1,4 @@
+import json
 import pandas as pd
 import streamlit as st
 
@@ -176,7 +177,7 @@ def render_employee_management_tab(
         if uploaded_employees is not None:
             try:
                 raw_text = uploaded_employees.getvalue().decode("utf-8", errors="ignore")
-                imported_obj = pd.io.json.loads(raw_text)
+                imported_obj = json.loads(raw_text)
                 st.session_state["_imported_employees_preview"] = imported_obj
             except Exception as e:
                 st.session_state.pop("_imported_employees_preview", None)
