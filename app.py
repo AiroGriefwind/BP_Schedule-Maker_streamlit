@@ -1398,51 +1398,6 @@ if main_shift_file:
                     add_employee(name, role, start, end)
                     st.success(f"Employee {name} added.")
 
-st.sidebar.header("Actions")
-if st.sidebar.button("Generate Schedule"):
-    with st.spinner("Generating schedule..."):
-        warnings = generate_schedule(st.session_state.availability, st.session_state.start_date, export_to_excel=False)
-        st.session_state.warnings = warnings
-        st.session_state.generated_schedule = pd.DataFrame(get_last_generated_schedule())
-        if not warnings:
-            st.toast("✅ Schedule generated successfully!")
-        else:
-            st.toast(f"⚠️ Schedule generated with {len(warnings)} warnings.")
-
-
-if st.sidebar.button("Save All Changes", type="primary"):
-    with st.spinner("Saving data..."):
-        # Get edited DataFrame from your DataEditor variable (replace displaydf/editeddf as needed)
-        # For example, edited_df = st.session_state['edited_availability_df'] if you've stored it there
-        # If you use a local variable, just reference it directly
-
-        # Step 1: Merge new text values with old color info
-        # Replace 'edited_df' with whatever you use for the currently edited table
-        merged_availability = availability_utils.merge_edited_df_with_color(
-            availability_df, st.session_state.availability
-        )
-
-        # Step 2: Save to session state and file
-        st.session_state.availability = merged_availability
-        save_data(st.session_state.availability)
-        save_employees(st.session_state.employees)
-        st.toast("💾 All changes saved to server files!")
-
-# Explicit save for imported availability (clarify persistence for users)
-if st.sidebar.button("保存当前总表到 Firebase（仅 availability）", type="secondary"):
-    try:
-        with st.spinner("Saving availability to Firebase..."):
-            save_data(st.session_state.availability)
-        st.toast("✅ 已保存当前 availability 到 Firebase。")
-    except Exception as e:
-        st.sidebar.error(f"保存失败：{e}")
-
-
-if st.sidebar.button("Clear All Availability"):
-    st.session_state.availability = clear_availability(st.session_state.start_date, st.session_state.employees)
-    st.toast("🗑️ Availability cleared and reset.")
-    st.rerun()
-
 # --- Main Page UI ---
 st.title("Employee Availability Editor")
 
@@ -1476,11 +1431,18 @@ with availability_tab:
         import_from_google_form=import_from_google_form,
         export_availability_to_excel=export_availability_to_excel,
         generated_schedule=st.session_state.generated_schedule,
+        availability_df=availability_df,
+        save_data=save_data,
+        save_employees=save_employees,
+        clear_availability=clear_availability,
     )
 
 
 with schedule_tab:
-    render_schedule_tab()
+    render_schedule_tab(
+        generate_schedule=generate_schedule,
+        get_last_generated_schedule=get_last_generated_schedule,
+    )
 
 with import_export_tab:
     render_import_export_tab(

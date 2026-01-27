@@ -15,6 +15,10 @@ def render_availability_tab(
     import_from_google_form,
     export_availability_to_excel,
     generated_schedule,
+    availability_df,
+    save_data,
+    save_employees,
+    clear_availability,
 ):
     # --- Availability Editor ---
     st.header("Availability Grid")
@@ -101,6 +105,33 @@ def render_availability_tab(
             dataframe_to_availability(full_edited_df)
     else:
         st.warning("No availability data found. Initialize or import data.")
+
+    st.divider()
+    st.subheader("Actions")
+    if st.button("Save All Changes", type="primary"):
+        with st.spinner("Saving data..."):
+            merged_availability = availability_utils.merge_edited_df_with_color(
+                availability_df, st.session_state.availability
+            )
+            st.session_state.availability = merged_availability
+            save_data(st.session_state.availability)
+            save_employees(st.session_state.employees)
+            st.toast("💾 All changes saved to server files!")
+
+    if st.button("保存当前总表到 Firebase（仅 availability）", type="secondary"):
+        try:
+            with st.spinner("Saving availability to Firebase..."):
+                save_data(st.session_state.availability)
+            st.toast("✅ 已保存当前 availability 到 Firebase。")
+        except Exception as e:
+            st.error(f"保存失败：{e}")
+
+    if st.button("Clear All Availability"):
+        st.session_state.availability = clear_availability(
+            st.session_state.start_date, st.session_state.employees
+        )
+        st.toast("🗑️ Availability cleared and reset.")
+        st.rerun()
 
     st.divider()
     st.subheader("Data Import")
