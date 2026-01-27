@@ -1486,4 +1486,5 @@ with import_export_tab:
     render_import_export_tab(
         role_rules=ROLE_RULES,
         employees=st.session_state.employees,
+        fm=fm,
     )
