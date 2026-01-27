@@ -1,13 +1,16 @@
 import pandas as pd
 import streamlit as st
 
+from utils.availability_utils import (
+    availability_to_color_css_dataframe,
+    availability_to_dataframe,
+    dataframe_to_availability,
+)
+
 
 def render_availability_tab(
     *,
     role_rules,
-    availability_to_dataframe,
-    availability_color_css_df,
-    dataframe_to_availability,
     components,
 ):
     # --- Availability Editor ---
@@ -23,6 +26,7 @@ def render_availability_tab(
         filtered_employees = [emp.name for emp in st.session_state.employees if emp.employee_type == selected_role]
 
     availability_df = availability_to_dataframe()
+    availability_color_css_df = availability_to_color_css_dataframe()
 
     if not availability_df.empty:
         # Defensive: use imported_col_order if set, else employee order

@@ -12,6 +12,7 @@ from tabs.employee_management import render_employee_management_tab
 from tabs.group_rules import render_group_rules_tab
 from tabs.availability_editor import render_availability_tab
 from tabs.schedule_output import render_schedule_tab
+from utils import availability_utils
 from scheduling_logic import (
     load_employees,
     load_data,
@@ -1321,8 +1322,8 @@ def dataframe_to_availability(edited_df):
 # --- Initialization ---
 initialize_session_state()
 
-availability_df = availability_to_dataframe()
-availability_color_css_df = availability_to_color_css_dataframe()
+availability_df = availability_utils.availability_to_dataframe()
+availability_color_css_df = availability_utils.availability_to_color_css_dataframe()
 
 # --- Sidebar UI ---
 st.sidebar.title("🗓️ Schedule Maker")
@@ -1416,7 +1417,9 @@ if st.sidebar.button("Save All Changes", type="primary"):
 
         # Step 1: Merge new text values with old color info
         # Replace 'edited_df' with whatever you use for the currently edited table
-        merged_availability = merge_edited_df_with_color(availability_df, st.session_state.availability)
+        merged_availability = availability_utils.merge_edited_df_with_color(
+            availability_df, st.session_state.availability
+        )
 
         # Step 2: Save to session state and file
         st.session_state.availability = merged_availability
@@ -1480,7 +1483,9 @@ st.sidebar.info("To permanently save changes, download the data files and commit
 employees_json = json.dumps([emp.__dict__ for emp in st.session_state.employees], indent=4)
 st.sidebar.download_button("Download employees.json", employees_json, "employees.json")
 
-availability_serializable = convert_availability_dates_to_str(st.session_state.availability)
+availability_serializable = availability_utils.convert_availability_dates_to_str(
+    st.session_state.availability
+)
 availability_json = json.dumps(availability_serializable, ensure_ascii=False, indent=4)
 
 st.sidebar.download_button("Download availability.json", availability_json, "availability.json")
@@ -1513,25 +1518,12 @@ with group_rules_tab:
         load_group_rules=load_group_rules,
         save_group_rules=save_group_rules,
         group_rules_default=GROUP_RULES,
-        fm=fm,
-        validate_group_coverage_from_availability=validate_group_coverage_from_availability,
-        build_week_bins_from_dates=_build_week_bins_from_dates,
-        build_week_grid_df=_build_week_grid_df,
-        build_cell_member_detail_df=_build_cell_member_detail_df,
-        extract_date_time_from_obj=_extract_date_time_from_obj,
-        availability_cell_css=_availability_cell_css,
-        normalize_windows_df_for_editor=_normalize_windows_df_for_editor,
-        validate_and_build_windows_df=_validate_and_build_windows_df,
-        day_type_options_base=_DAY_TYPE_OPTIONS_BASE,
-        time_options_base=_TIME_OPTIONS_BASE,
         alt=alt,
+        fm=fm,
     )
 with availability_tab:
     render_availability_tab(
         role_rules=ROLE_RULES,
-        availability_to_dataframe=availability_to_dataframe,
-        availability_color_css_df=availability_color_css_df,
-        dataframe_to_availability=dataframe_to_availability,
         components=components,
     )
 

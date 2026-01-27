@@ -6,6 +6,19 @@ from typing import Any, Tuple
 import pandas as pd
 import streamlit as st
 
+from utils.availability_utils import availability_cell_css
+from utils.group_rules_utils import (
+    DAY_TYPE_OPTIONS_BASE,
+    TIME_OPTIONS_BASE,
+    build_cell_member_detail_df,
+    build_week_bins_from_dates,
+    build_week_grid_df,
+    extract_date_time_from_obj,
+    normalize_windows_df_for_editor,
+    validate_and_build_windows_df,
+    validate_group_coverage_from_availability,
+)
+
 
 def render_group_rules_tab(
     *,
@@ -14,16 +27,6 @@ def render_group_rules_tab(
     save_group_rules,
     group_rules_default,
     fm,
-    validate_group_coverage_from_availability,
-    build_week_bins_from_dates,
-    build_week_grid_df,
-    build_cell_member_detail_df,
-    extract_date_time_from_obj,
-    availability_cell_css,
-    normalize_windows_df_for_editor,
-    validate_and_build_windows_df,
-    day_type_options_base,
-    time_options_base,
     alt,
 ):
     # --- Custom Group Rules (Team Rules) ---
@@ -508,9 +511,9 @@ def render_group_rules_tab(
             default_windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
             # Include any existing values (if rerun keeps state) so editor won't blank them out,
             # but validation will still require selections to be from base options.
-            day_opts = list(dict.fromkeys(day_type_options_base + [str(x).strip().lower() for x in default_windows_df.get("day_type", []) if str(x).strip()]))
-            start_opts = list(dict.fromkeys(time_options_base + [str(x).strip() for x in default_windows_df.get("start", []) if str(x).strip()]))
-            end_opts = list(dict.fromkeys(time_options_base + [str(x).strip() for x in default_windows_df.get("end", []) if str(x).strip()]))
+            day_opts = list(dict.fromkeys(DAY_TYPE_OPTIONS_BASE + [str(x).strip().lower() for x in default_windows_df.get("day_type", []) if str(x).strip()]))
+            start_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + [str(x).strip() for x in default_windows_df.get("start", []) if str(x).strip()]))
+            end_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + [str(x).strip() for x in default_windows_df.get("end", []) if str(x).strip()]))
             win_df = st.data_editor(
                 default_windows_df,
                 num_rows="dynamic",
@@ -649,9 +652,9 @@ def render_group_rules_tab(
                     existing_day = [str(x).strip().lower() for x in windows_df.get("day_type", []) if str(x).strip()]
                     existing_start = [str(x).strip() for x in windows_df.get("start", []) if str(x).strip()]
                     existing_end = [str(x).strip() for x in windows_df.get("end", []) if str(x).strip()]
-                    day_opts = list(dict.fromkeys(day_type_options_base + existing_day))
-                    start_opts = list(dict.fromkeys(time_options_base + existing_start))
-                    end_opts = list(dict.fromkeys(time_options_base + existing_end))
+                    day_opts = list(dict.fromkeys(DAY_TYPE_OPTIONS_BASE + existing_day))
+                    start_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + existing_start))
+                    end_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + existing_end))
                     edited_windows_df = st.data_editor(
                         windows_df,
                         num_rows="dynamic",
