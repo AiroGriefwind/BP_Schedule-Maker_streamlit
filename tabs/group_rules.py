@@ -56,7 +56,20 @@ def render_group_rules_tab(
         "临时任务：碎片化但重要的小事，通常办公室时间内完成，组内被标记成员一般都可同时处理。"
     )
 
-    import_tab, validate_tab, manage_tab = st.tabs(["导入/诊断", "验证", "小组管理"])
+    action_cols = st.columns([1, 1, 2])
+    with action_cols[0]:
+        if st.button("刷新"):
+            with st.spinner("Refreshing from Firebase..."):
+                st.session_state.group_rules = load_group_rules()
+            st.toast("🔄 已刷新小组规则。")
+            st.rerun()
+    with action_cols[1]:
+        if st.button("手动保存"):
+            with st.spinner("Saving group rules to Firebase..."):
+                save_group_rules(st.session_state.group_rules)
+            st.toast("💾 小组规则已保存到 Firebase。")
+
+    manage_tab, validate_tab, import_tab = st.tabs(["小组管理", "验证", "导入/诊断"])
 
     with import_tab:
         # --- Import group_rules.json (dry-run preview; does NOT write to Firebase unless you click save) ---
@@ -452,17 +465,6 @@ def _render_group_rules_manage(
     group_rule_type_help,
     reset_group_edit_widgets,
 ):
-    cols = st.columns([1, 1, 2])
-    with cols[0]:
-        if st.button("🔄 从Firebase刷新小组规则"):
-            st.session_state.group_rules = load_group_rules()
-            st.toast("已刷新小组规则。")
-            st.rerun()
-    with cols[1]:
-        if st.button("💾 保存小组规则到Firebase", type="primary"):
-            save_group_rules(st.session_state.group_rules)
-            st.toast("小组规则已保存到 Firebase。")
-
     # Overview
     if groups:
         st.markdown("**概览（点击“成员/备选”可展开查看）**")
