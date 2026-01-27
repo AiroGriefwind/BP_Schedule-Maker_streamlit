@@ -29,12 +29,36 @@ def render_group_rules_tab(
     fm,
     alt,
 ):
-    # --- Custom Group Rules (Team Rules) ---
-    with st.expander("自定义更表规则（小组）"):
-        if not group_rules_enabled:
-            st.warning("当前部署环境的 `scheduling_logic.py` 版本不包含小组规则功能（load_group_rules）。请确保已把最新代码部署/推送后再使用此功能。")
-            st.stop()
+    if not group_rules_enabled:
+        st.warning("当前部署环境的 `scheduling_logic.py` 版本不包含小组规则功能（load_group_rules）。请确保已把最新代码部署/推送后再使用此功能。")
+        st.stop()
 
+    def _reset_group_edit_widgets():
+        """
+        When switching the selected group, we must clear the edit widget keys.
+        Otherwise Streamlit will reuse previous widget state and the UI appears "not refreshed".
+        """
+        # Clear any previously created per-group edit widgets
+        for k in list(st.session_state.keys()):
+            if k.startswith("edit_group_ui__") or k.startswith("confirm_delete_group_ui__"):
+                del st.session_state[k]
+
+    group_rules = st.session_state.get("group_rules") or group_rules_default
+    groups = group_rules.get("groups", [])
+    # --- Rule type labels (routine/task) ---
+    # Choose Chinese-friendly names while keeping stored values stable: "routine" | "task".
+    _GROUP_RULE_TYPE_LABELS = {
+        "routine": "例行工作（Routine）",
+        "task": "临时任务（Task）",
+    }
+    _GROUP_RULE_TYPE_HELP = (
+        "例行工作：需要专注、耗时较长的日常办公工作（后续会支持只有特定员工可同时承担多项例行工作）。\n\n"
+        "临时任务：碎片化但重要的小事，通常办公室时间内完成，组内被标记成员一般都可同时处理。"
+    )
+
+    import_tab, validate_tab, manage_tab = st.tabs(["导入/诊断", "验证", "小组管理"])
+
+    with import_tab:
         # --- Import group_rules.json (dry-run preview; does NOT write to Firebase unless you click save) ---
         st.markdown("**导入 group_rules.json（可选）**")
         st.caption("选择文件后只会在本次会话中解析与预览，不会自动写入 Firebase。需要你点击“应用/保存”按钮才会生效。")
@@ -84,27 +108,6 @@ def render_group_rules_tab(
             with import_cols[2]:
                 st.caption("说明：保存时会进行 schema 规范化；无效规则段（如 start/end 为 None）不会写回。")
 
-        def _reset_group_edit_widgets():
-            """
-            When switching the selected group, we must clear the edit widget keys.
-            Otherwise Streamlit will reuse previous widget state and the UI appears "not refreshed".
-            """
-            # Clear any previously created per-group edit widgets
-            for k in list(st.session_state.keys()):
-                if k.startswith("edit_group_ui__") or k.startswith("confirm_delete_group_ui__"):
-                    del st.session_state[k]
-
-        # Refresh from Firebase
-        cols = st.columns([1, 1, 2])
-        with cols[0]:
-            if st.button("🔄 从Firebase刷新小组规则"):
-                st.session_state.group_rules = load_group_rules()
-                st.toast("已刷新小组规则。")
-        with cols[1]:
-            if st.button("💾 保存小组规则到Firebase", type="primary"):
-                save_group_rules(st.session_state.group_rules)
-                st.toast("小组规则已保存到 Firebase。")
-
         # Diagnostics (helps when different deployments / Firebase envs appear inconsistent)
         with st.expander("诊断：Firebase 读取到的小组规则（只读）", expanded=False):
             try:
@@ -140,7 +143,7 @@ def render_group_rules_tab(
                         if isinstance(backup, dict):
                             st.caption(f"backup keys: {list(backup.keys())}")
                             st.caption(f"backup updated_at: {backup.get('updated_at')}")
-                            bg = backup.get('groups') or []
+                            bg = backup.get("groups") or []
                             st.caption(f"backup groups 数量: {len(bg) if isinstance(bg, list) else 'N/A'}")
                         st.json(backup)
                 except Exception as e:
@@ -148,19 +151,7 @@ def render_group_rules_tab(
             except Exception as e:
                 st.error(f"诊断读取失败：{e}")
 
-        group_rules = st.session_state.get("group_rules") or group_rules_default
-        groups = group_rules.get("groups", [])
-        # --- Rule type labels (routine/task) ---
-        # Choose Chinese-friendly names while keeping stored values stable: "routine" | "task".
-        _GROUP_RULE_TYPE_LABELS = {
-            "routine": "例行工作（Routine）",
-            "task": "临时任务（Task）",
-        }
-        _GROUP_RULE_TYPE_HELP = (
-            "例行工作：需要专注、耗时较长的日常办公工作（后续会支持只有特定员工可同时承担多项例行工作）。\n\n"
-            "临时任务：碎片化但重要的小事，通常办公室时间内完成，组内被标记成员一般都可同时处理。"
-        )
-
+    with validate_tab:
         # --- Validate group coverage based on imported "total sheet" (availability) ---
         st.subheader("验证小组需求（基于已导入的总表）")
         if not groups:
@@ -439,296 +430,329 @@ def render_group_rules_tab(
 
         st.caption("说明：小组规则用于校验排班是否满足“某时段最少需要多少人值更”。此处按“30 分钟时段”进行覆盖校验与可视化。")
 
-        # Overview
-        if groups:
-            st.markdown("**概览（点击“成员/备选”可展开查看）**")
-            header_cols = st.columns([2, 2, 4, 1, 1, 1])
-            header_cols[0].markdown("**名称**")
-            header_cols[1].markdown("**类型**")
-            header_cols[2].markdown("**成员/备选**")
-            header_cols[3].markdown("**成员数**")
-            header_cols[4].markdown("**备选数**")
-            header_cols[5].markdown("**规则段数**")
+    with manage_tab:
+        _render_group_rules_manage(
+            groups=groups,
+            group_rules=group_rules,
+            load_group_rules=load_group_rules,
+            save_group_rules=save_group_rules,
+            group_rule_type_labels=_GROUP_RULE_TYPE_LABELS,
+            group_rule_type_help=_GROUP_RULE_TYPE_HELP,
+            reset_group_edit_widgets=_reset_group_edit_widgets,
+        )
 
-            for g in groups:
-                name = g.get("name")
-                rt = str(g.get("rule_type") or "routine").strip().lower()
-                rt = rt if rt in _GROUP_RULE_TYPE_LABELS else "routine"
-                rt_label = _GROUP_RULE_TYPE_LABELS.get(rt, rt)
-                members = g.get("members", []) or []
-                backups = g.get("backup_members", []) or []
-                rules = g.get("requirements_windows", []) or []
-                member_count = len(members)
-                backup_count = len(backups)
-                rules_count = len(rules)
 
-                row_cols = st.columns([2, 2, 4, 1, 1, 1], vertical_alignment="center")
-                with row_cols[0]:
-                    st.write(name)
-                with row_cols[1]:
-                    st.caption(rt_label)
-                with row_cols[2]:
-                    with st.expander(f"成员/备选（{member_count}/{backup_count}）", expanded=False):
-                        if members:
-                            st.write("成员：" + "、".join(members))
-                        else:
-                            st.caption("成员：（无）")
-                        if backups:
-                            st.write("备选：" + "、".join(backups))
-                        else:
-                            st.caption("备选：（无）")
-                row_cols[3].write(member_count)
-                row_cols[4].write(backup_count)
-                row_cols[5].write(rules_count)
-        else:
-            st.info("当前还没有任何小组。你可以在下面创建一个。")
+def _render_group_rules_manage(
+    *,
+    groups,
+    group_rules,
+    load_group_rules,
+    save_group_rules,
+    group_rule_type_labels,
+    group_rule_type_help,
+    reset_group_edit_widgets,
+):
+    cols = st.columns([1, 1, 2])
+    with cols[0]:
+        if st.button("🔄 从Firebase刷新小组规则"):
+            st.session_state.group_rules = load_group_rules()
+            st.toast("已刷新小组规则。")
+            st.rerun()
+    with cols[1]:
+        if st.button("💾 保存小组规则到Firebase", type="primary"):
+            save_group_rules(st.session_state.group_rules)
+            st.toast("小组规则已保存到 Firebase。")
 
-        employee_names = [e.name for e in st.session_state.employees]
+    # Overview
+    if groups:
+        st.markdown("**概览（点击“成员/备选”可展开查看）**")
+        header_cols = st.columns([2, 2, 4, 1, 1, 1])
+        header_cols[0].markdown("**名称**")
+        header_cols[1].markdown("**类型**")
+        header_cols[2].markdown("**成员/备选**")
+        header_cols[3].markdown("**成员数**")
+        header_cols[4].markdown("**备选数**")
+        header_cols[5].markdown("**规则段数**")
 
-        st.subheader("创建新小组")
-        with st.form("create_group_form", clear_on_submit=True):
-            new_name = st.text_input("小组名称（必填）")
-            new_desc = st.text_input("备注/说明（可选）")
-            new_rule_type_label = st.selectbox(
-                "规则类型（必选）",
-                options=[_GROUP_RULE_TYPE_LABELS["routine"], _GROUP_RULE_TYPE_LABELS["task"]],
-                index=0,
-                help=_GROUP_RULE_TYPE_HELP,
-            )
-            new_rule_type = "routine" if new_rule_type_label == _GROUP_RULE_TYPE_LABELS["routine"] else "task"
-            new_active = st.checkbox("启用", value=True)
-            new_headcount = st.number_input("规划人数（可选）", min_value=0, value=0, step=1)
-            new_members = st.multiselect("成员（从现有员工中选择）", options=employee_names, default=[])
-            new_backup_members = st.multiselect(
-                "备选成员（从现有员工中选择）",
-                options=[e for e in employee_names if e not in new_members],
-                default=[],
-            )
-            st.caption("同一员工不可同时出现在成员与备选中。")
+        for g in groups:
+            name = g.get("name")
+            rt = str(g.get("rule_type") or "routine").strip().lower()
+            rt = rt if rt in group_rule_type_labels else "routine"
+            rt_label = group_rule_type_labels.get(rt, rt)
+            members = g.get("members", []) or []
+            backups = g.get("backup_members", []) or []
+            rules = g.get("requirements_windows", []) or []
+            member_count = len(members)
+            backup_count = len(backups)
+            rules_count = len(rules)
 
-            st.markdown("规则段（可多段）：每一段表示在该时间窗内，每个小时至少需要多少名成员在岗。")
-            st.caption("day_type 建议：all=每天；mon..sun=周一..周日。start/end 为 30 分钟刻度，end 可选 24:00。")
-            default_windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
-            # Include any existing values (if rerun keeps state) so editor won't blank them out,
-            # but validation will still require selections to be from base options.
-            day_opts = list(dict.fromkeys(DAY_TYPE_OPTIONS_BASE + [str(x).strip().lower() for x in default_windows_df.get("day_type", []) if str(x).strip()]))
-            start_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + [str(x).strip() for x in default_windows_df.get("start", []) if str(x).strip()]))
-            end_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + [str(x).strip() for x in default_windows_df.get("end", []) if str(x).strip()]))
-            win_df = st.data_editor(
-                default_windows_df,
-                num_rows="dynamic",
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "day_type": st.column_config.SelectboxColumn("day_type", options=day_opts, required=True, help="all=每天；mon..sun=周一..周日（兼容 weekday/weekend）。"),
-                    "start": st.column_config.SelectboxColumn("start", options=start_opts, required=True, help="开始时间（30 分钟刻度）。"),
-                    "end": st.column_config.SelectboxColumn("end", options=end_opts, required=True, help="结束时间（30 分钟刻度；可选 24:00）。"),
-                    "min_staff": st.column_config.NumberColumn("min_staff", min_value=0, step=1, required=True, help="该时间窗内，每小时最少在岗人数。"),
-                },
-                key="new_group_windows",
-            )
+            row_cols = st.columns([2, 2, 4, 1, 1, 1], vertical_alignment="center")
+            with row_cols[0]:
+                st.write(name)
+            with row_cols[1]:
+                st.caption(rt_label)
+            with row_cols[2]:
+                with st.expander(f"成员/备选（{member_count}/{backup_count}）", expanded=False):
+                    if members:
+                        st.write("成员：" + "、".join(members))
+                    else:
+                        st.caption("成员：（无）")
+                    if backups:
+                        st.write("备选：" + "、".join(backups))
+                    else:
+                        st.caption("备选：（无）")
+            row_cols[3].write(member_count)
+            row_cols[4].write(backup_count)
+            row_cols[5].write(rules_count)
+    else:
+        st.info("当前还没有任何小组。你可以在下面创建一个。")
 
-            submitted = st.form_submit_button("创建小组")
-            if submitted:
-                if not new_name.strip():
-                    st.error("小组名称不能为空。")
+    employee_names = [e.name for e in st.session_state.employees]
+
+    st.subheader("创建新小组")
+    with st.form("create_group_form", clear_on_submit=True):
+        new_name = st.text_input("小组名称（必填）")
+        new_desc = st.text_input("备注/说明（可选）")
+        new_rule_type_label = st.selectbox(
+            "规则类型（必选）",
+            options=[group_rule_type_labels["routine"], group_rule_type_labels["task"]],
+            index=0,
+            help=group_rule_type_help,
+        )
+        new_rule_type = "routine" if new_rule_type_label == group_rule_type_labels["routine"] else "task"
+        new_active = st.checkbox("启用", value=True)
+        new_headcount = st.number_input("规划人数（可选）", min_value=0, value=0, step=1)
+        new_members = st.multiselect("成员（从现有员工中选择）", options=employee_names, default=[])
+        new_backup_members = st.multiselect(
+            "备选成员（从现有员工中选择）",
+            options=[e for e in employee_names if e not in new_members],
+            default=[],
+        )
+        st.caption("同一员工不可同时出现在成员与备选中。")
+
+        st.markdown("规则段（可多段）：每一段表示在该时间窗内，每个小时至少需要多少名成员在岗。")
+        st.caption("day_type 建议：all=每天；mon..sun=周一..周日。start/end 为 30 分钟刻度，end 可选 24:00。")
+        default_windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
+        # Include any existing values (if rerun keeps state) so editor won't blank them out,
+        # but validation will still require selections to be from base options.
+        day_opts = list(dict.fromkeys(DAY_TYPE_OPTIONS_BASE + [str(x).strip().lower() for x in default_windows_df.get("day_type", []) if str(x).strip()]))
+        start_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + [str(x).strip() for x in default_windows_df.get("start", []) if str(x).strip()]))
+        end_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + [str(x).strip() for x in default_windows_df.get("end", []) if str(x).strip()]))
+        win_df = st.data_editor(
+            default_windows_df,
+            num_rows="dynamic",
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "day_type": st.column_config.SelectboxColumn("day_type", options=day_opts, required=True, help="all=每天；mon..sun=周一..周日（兼容 weekday/weekend）。"),
+                "start": st.column_config.SelectboxColumn("start", options=start_opts, required=True, help="开始时间（30 分钟刻度）。"),
+                "end": st.column_config.SelectboxColumn("end", options=end_opts, required=True, help="结束时间（30 分钟刻度；可选 24:00）。"),
+                "min_staff": st.column_config.NumberColumn("min_staff", min_value=0, step=1, required=True, help="该时间窗内，每小时最少在岗人数。"),
+            },
+            key="new_group_windows",
+        )
+
+        submitted = st.form_submit_button("创建小组")
+        if submitted:
+            if not new_name.strip():
+                st.error("小组名称不能为空。")
+            else:
+                # Prevent duplicate names
+                if any(g.get("name") == new_name.strip() for g in groups):
+                    st.error("已存在同名小组，请换一个名称。")
                 else:
-                    # Prevent duplicate names
-                    if any(g.get("name") == new_name.strip() for g in groups):
+                    windows, win_errors = validate_and_build_windows_df(win_df)
+                    if win_errors:
+                        st.error("规则段存在问题，请修正后再提交：\n\n- " + "\n- ".join(win_errors))
+                        st.stop()
+
+                    name_lookup = {str(n).strip(): n for n in employee_names if str(n).strip()}
+                    primary_members = [name_lookup.get(str(m).strip()) for m in new_members]
+                    primary_members = [m for m in primary_members if m]
+                    primary_members = list(dict.fromkeys(primary_members))
+                    backup_members = [name_lookup.get(str(m).strip()) for m in new_backup_members]
+                    backup_members = [m for m in backup_members if m]
+                    backup_members = list(dict.fromkeys(backup_members))
+                    overlap = sorted(set(primary_members) & set(backup_members))
+                    if overlap:
+                        st.error("成员与备选不能重复：" + "、".join(overlap))
+                        st.stop()
+                    backup_members = [m for m in backup_members if m not in primary_members]
+
+                    new_group = {
+                        "id": uuid.uuid4().hex,
+                        "name": new_name.strip(),
+                        "description": new_desc.strip(),
+                        "rule_type": new_rule_type,
+                        "active": bool(new_active),
+                        "headcount_planned": int(new_headcount) if new_headcount else None,
+                        "members": primary_members,
+                        "backup_members": backup_members,
+                        "requirements_windows": windows,
+                    }
+                    group_rules.setdefault("groups", []).append(new_group)
+                    st.session_state.group_rules = group_rules
+                    save_group_rules(st.session_state.group_rules)
+                    st.toast(f"✅ 小组“{new_name.strip()}”已创建并保存。")
+                    st.session_state.initialized = False
+                    st.rerun()
+
+    st.subheader("编辑/删除现有小组")
+    if groups:
+        name_to_group = {g.get("name"): g for g in groups if g.get("name")}
+
+        # If we need to update the selected group programmatically (e.g. after rename/delete),
+        # do it BEFORE the selectbox is instantiated to avoid StreamlitAPIException.
+        pending_key = "_pending_selected_group_name"
+        if pending_key in st.session_state:
+            st.session_state["selected_group_name"] = st.session_state[pending_key]
+            del st.session_state[pending_key]
+
+        selected_group_name = st.selectbox(
+            "选择小组",
+            options=list(name_to_group.keys()),
+            key="selected_group_name",
+            on_change=reset_group_edit_widgets,
+        )
+        g = name_to_group.get(selected_group_name)
+
+        if g:
+            gid = str(g.get("id") or g.get("name") or "unknown")
+            key_prefix = f"edit_group_ui__{gid}__"
+            edit_cols = st.columns([2, 2])
+            with edit_cols[0]:
+                edited_name = st.text_input("小组名称", value=g.get("name", ""), key=f"{key_prefix}name")
+                edited_desc = st.text_input("备注/说明", value=g.get("description", ""), key=f"{key_prefix}desc")
+                cur_rt = str(g.get("rule_type") or "routine").strip().lower()
+                if cur_rt not in group_rule_type_labels:
+                    cur_rt = "routine"
+                edited_rule_type_label = st.selectbox(
+                    "规则类型",
+                    options=[group_rule_type_labels["routine"], group_rule_type_labels["task"]],
+                    index=0 if cur_rt == "routine" else 1,
+                    key=f"{key_prefix}rule_type",
+                    help=group_rule_type_help,
+                )
+                edited_rule_type = "routine" if edited_rule_type_label == group_rule_type_labels["routine"] else "task"
+                edited_active = st.checkbox("启用", value=bool(g.get("active", True)), key=f"{key_prefix}active")
+                edited_headcount = st.number_input(
+                    "规划人数（可选）",
+                    min_value=0,
+                    value=int(g.get("headcount_planned") or 0),
+                    step=1,
+                    key=f"{key_prefix}headcount",
+                )
+                default_members = [m for m in (g.get("members") or []) if m in employee_names]
+                default_backups = [
+                    m
+                    for m in (g.get("backup_members") or [])
+                    if m in employee_names and m not in default_members
+                ]
+                edited_members = st.multiselect(
+                    "成员（从现有员工中选择）",
+                    options=employee_names,
+                    default=default_members,
+                    key=f"{key_prefix}members",
+                )
+                backup_options = [e for e in employee_names if e not in edited_members]
+                default_backups = [m for m in default_backups if m in backup_options]
+                edited_backup_members = st.multiselect(
+                    "备选成员（从现有员工中选择）",
+                    options=backup_options,
+                    default=default_backups,
+                    key=f"{key_prefix}backup_members",
+                )
+                st.caption("同一员工不可同时出现在成员与备选中。")
+
+            with edit_cols[1]:
+                windows_df = pd.DataFrame(g.get("requirements_windows") or [])
+                if windows_df.empty:
+                    windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
+                windows_df, dropped_bad = normalize_windows_df_for_editor(windows_df)
+                if dropped_bad:
+                    st.caption(f"已自动忽略 {dropped_bad} 行无效规则段（start/end 为空或为 None）。保存后这些无效行也不会写回。")
+                # Include any existing values so the editor can display legacy data,
+                # but validator will still enforce base options on save.
+                existing_day = [str(x).strip().lower() for x in windows_df.get("day_type", []) if str(x).strip()]
+                existing_start = [str(x).strip() for x in windows_df.get("start", []) if str(x).strip()]
+                existing_end = [str(x).strip() for x in windows_df.get("end", []) if str(x).strip()]
+                day_opts = list(dict.fromkeys(DAY_TYPE_OPTIONS_BASE + existing_day))
+                start_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + existing_start))
+                end_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + existing_end))
+                edited_windows_df = st.data_editor(
+                    windows_df,
+                    num_rows="dynamic",
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "day_type": st.column_config.SelectboxColumn("day_type", options=day_opts, required=True, help="all=每天；mon..sun=周一..周日（兼容 weekday/weekend）。"),
+                        "start": st.column_config.SelectboxColumn("start", options=start_opts, required=True, help="开始时间（30 分钟刻度）。"),
+                        "end": st.column_config.SelectboxColumn("end", options=end_opts, required=True, help="结束时间（30 分钟刻度；可选 24:00）。"),
+                        "min_staff": st.column_config.NumberColumn("min_staff", min_value=0, step=1, required=True, help="该时间窗内，每小时最少在岗人数。"),
+                    },
+                    key=f"{key_prefix}windows",
+                )
+
+            action_cols = st.columns([1, 1, 2])
+            with action_cols[0]:
+                if st.button("保存该小组修改", type="primary"):
+                    # Validate rename collisions
+                    new_name_norm = edited_name.strip()
+                    if not new_name_norm:
+                        st.error("小组名称不能为空。")
+                    elif new_name_norm != g.get("name") and any(x.get("name") == new_name_norm for x in groups):
                         st.error("已存在同名小组，请换一个名称。")
                     else:
-                        windows, win_errors = validate_and_build_windows_df(win_df)
+                        new_windows, win_errors = validate_and_build_windows_df(edited_windows_df)
                         if win_errors:
-                            st.error("规则段存在问题，请修正后再提交：\n\n- " + "\n- ".join(win_errors))
+                            st.error("规则段存在问题，请修正后再保存：\n\n- " + "\n- ".join(win_errors))
                             st.stop()
 
+                        g["name"] = new_name_norm
+                        g["description"] = edited_desc.strip()
+                        g["rule_type"] = edited_rule_type
+                        g["active"] = bool(edited_active)
+                        g["headcount_planned"] = int(edited_headcount) if edited_headcount else None
                         name_lookup = {str(n).strip(): n for n in employee_names if str(n).strip()}
-                        primary_members = [name_lookup.get(str(m).strip()) for m in new_members]
-                        primary_members = [m for m in primary_members if m]
-                        primary_members = list(dict.fromkeys(primary_members))
-                        backup_members = [name_lookup.get(str(m).strip()) for m in new_backup_members]
-                        backup_members = [m for m in backup_members if m]
-                        backup_members = list(dict.fromkeys(backup_members))
-                        overlap = sorted(set(primary_members) & set(backup_members))
+                        members_clean = [name_lookup.get(str(m).strip()) for m in edited_members]
+                        members_clean = [m for m in members_clean if m]
+                        members_clean = list(dict.fromkeys(members_clean))
+                        backups_clean = [name_lookup.get(str(m).strip()) for m in edited_backup_members]
+                        backups_clean = [m for m in backups_clean if m]
+                        backups_clean = list(dict.fromkeys(backups_clean))
+                        overlap = sorted(set(members_clean) & set(backups_clean))
                         if overlap:
                             st.error("成员与备选不能重复：" + "、".join(overlap))
                             st.stop()
-                        backup_members = [m for m in backup_members if m not in primary_members]
+                        backups_clean = [m for m in backups_clean if m not in members_clean]
+                        g["members"] = members_clean
+                        g["backup_members"] = backups_clean
+                        g["requirements_windows"] = new_windows
 
-                        new_group = {
-                            "id": uuid.uuid4().hex,
-                            "name": new_name.strip(),
-                            "description": new_desc.strip(),
-                            "rule_type": new_rule_type,
-                            "active": bool(new_active),
-                            "headcount_planned": int(new_headcount) if new_headcount else None,
-                            "members": primary_members,
-                            "backup_members": backup_members,
-                            "requirements_windows": windows,
-                        }
-                        group_rules.setdefault("groups", []).append(new_group)
                         st.session_state.group_rules = group_rules
                         save_group_rules(st.session_state.group_rules)
-                        st.toast(f"✅ 小组“{new_name.strip()}”已创建并保存。")
+                        st.toast("✅ 已保存小组修改到 Firebase。")
+                        # If renamed, keep selection in sync
+                        st.session_state["_pending_selected_group_name"] = new_name_norm
                         st.session_state.initialized = False
                         st.rerun()
 
-        st.subheader("编辑/删除现有小组")
-        if groups:
-            name_to_group = {g.get("name"): g for g in groups if g.get("name")}
-
-            # If we need to update the selected group programmatically (e.g. after rename/delete),
-            # do it BEFORE the selectbox is instantiated to avoid StreamlitAPIException.
-            pending_key = "_pending_selected_group_name"
-            if pending_key in st.session_state:
-                st.session_state["selected_group_name"] = st.session_state[pending_key]
-                del st.session_state[pending_key]
-
-            selected_group_name = st.selectbox(
-                "选择小组",
-                options=list(name_to_group.keys()),
-                key="selected_group_name",
-                on_change=_reset_group_edit_widgets,
-            )
-            g = name_to_group.get(selected_group_name)
-
-            if g:
-                gid = str(g.get("id") or g.get("name") or "unknown")
-                key_prefix = f"edit_group_ui__{gid}__"
-                edit_cols = st.columns([2, 2])
-                with edit_cols[0]:
-                    edited_name = st.text_input("小组名称", value=g.get("name", ""), key=f"{key_prefix}name")
-                    edited_desc = st.text_input("备注/说明", value=g.get("description", ""), key=f"{key_prefix}desc")
-                    cur_rt = str(g.get("rule_type") or "routine").strip().lower()
-                    if cur_rt not in _GROUP_RULE_TYPE_LABELS:
-                        cur_rt = "routine"
-                    edited_rule_type_label = st.selectbox(
-                        "规则类型",
-                        options=[_GROUP_RULE_TYPE_LABELS["routine"], _GROUP_RULE_TYPE_LABELS["task"]],
-                        index=0 if cur_rt == "routine" else 1,
-                        key=f"{key_prefix}rule_type",
-                        help=_GROUP_RULE_TYPE_HELP,
-                    )
-                    edited_rule_type = "routine" if edited_rule_type_label == _GROUP_RULE_TYPE_LABELS["routine"] else "task"
-                    edited_active = st.checkbox("启用", value=bool(g.get("active", True)), key=f"{key_prefix}active")
-                    edited_headcount = st.number_input(
-                        "规划人数（可选）",
-                        min_value=0,
-                        value=int(g.get("headcount_planned") or 0),
-                        step=1,
-                        key=f"{key_prefix}headcount",
-                    )
-                    default_members = [m for m in (g.get("members") or []) if m in employee_names]
-                    default_backups = [
-                        m
-                        for m in (g.get("backup_members") or [])
-                        if m in employee_names and m not in default_members
-                    ]
-                    edited_members = st.multiselect(
-                        "成员（从现有员工中选择）",
-                        options=employee_names,
-                        default=default_members,
-                        key=f"{key_prefix}members",
-                    )
-                    backup_options = [e for e in employee_names if e not in edited_members]
-                    default_backups = [m for m in default_backups if m in backup_options]
-                    edited_backup_members = st.multiselect(
-                        "备选成员（从现有员工中选择）",
-                        options=backup_options,
-                        default=default_backups,
-                        key=f"{key_prefix}backup_members",
-                    )
-                    st.caption("同一员工不可同时出现在成员与备选中。")
-
-                with edit_cols[1]:
-                    windows_df = pd.DataFrame(g.get("requirements_windows") or [])
-                    if windows_df.empty:
-                        windows_df = pd.DataFrame([{"day_type": "all", "start": "00:00", "end": "24:00", "min_staff": 1}])
-                    windows_df, dropped_bad = normalize_windows_df_for_editor(windows_df)
-                    if dropped_bad:
-                        st.caption(f"已自动忽略 {dropped_bad} 行无效规则段（start/end 为空或为 None）。保存后这些无效行也不会写回。")
-                    # Include any existing values so the editor can display legacy data,
-                    # but validator will still enforce base options on save.
-                    existing_day = [str(x).strip().lower() for x in windows_df.get("day_type", []) if str(x).strip()]
-                    existing_start = [str(x).strip() for x in windows_df.get("start", []) if str(x).strip()]
-                    existing_end = [str(x).strip() for x in windows_df.get("end", []) if str(x).strip()]
-                    day_opts = list(dict.fromkeys(DAY_TYPE_OPTIONS_BASE + existing_day))
-                    start_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + existing_start))
-                    end_opts = list(dict.fromkeys(TIME_OPTIONS_BASE + existing_end))
-                    edited_windows_df = st.data_editor(
-                        windows_df,
-                        num_rows="dynamic",
-                        width="stretch",
-                        hide_index=True,
-                        column_config={
-                            "day_type": st.column_config.SelectboxColumn("day_type", options=day_opts, required=True, help="all=每天；mon..sun=周一..周日（兼容 weekday/weekend）。"),
-                            "start": st.column_config.SelectboxColumn("start", options=start_opts, required=True, help="开始时间（30 分钟刻度）。"),
-                            "end": st.column_config.SelectboxColumn("end", options=end_opts, required=True, help="结束时间（30 分钟刻度；可选 24:00）。"),
-                            "min_staff": st.column_config.NumberColumn("min_staff", min_value=0, step=1, required=True, help="该时间窗内，每小时最少在岗人数。"),
-                        },
-                        key=f"{key_prefix}windows",
-                    )
-
-                action_cols = st.columns([1, 1, 2])
-                with action_cols[0]:
-                    if st.button("保存该小组修改", type="primary"):
-                        # Validate rename collisions
-                        new_name_norm = edited_name.strip()
-                        if not new_name_norm:
-                            st.error("小组名称不能为空。")
-                        elif new_name_norm != g.get("name") and any(x.get("name") == new_name_norm for x in groups):
-                            st.error("已存在同名小组，请换一个名称。")
-                        else:
-                            new_windows, win_errors = validate_and_build_windows_df(edited_windows_df)
-                            if win_errors:
-                                st.error("规则段存在问题，请修正后再保存：\n\n- " + "\n- ".join(win_errors))
-                                st.stop()
-
-                            g["name"] = new_name_norm
-                            g["description"] = edited_desc.strip()
-                            g["rule_type"] = edited_rule_type
-                            g["active"] = bool(edited_active)
-                            g["headcount_planned"] = int(edited_headcount) if edited_headcount else None
-                            name_lookup = {str(n).strip(): n for n in employee_names if str(n).strip()}
-                            members_clean = [name_lookup.get(str(m).strip()) for m in edited_members]
-                            members_clean = [m for m in members_clean if m]
-                            members_clean = list(dict.fromkeys(members_clean))
-                            backups_clean = [name_lookup.get(str(m).strip()) for m in edited_backup_members]
-                            backups_clean = [m for m in backups_clean if m]
-                            backups_clean = list(dict.fromkeys(backups_clean))
-                            overlap = sorted(set(members_clean) & set(backups_clean))
-                            if overlap:
-                                st.error("成员与备选不能重复：" + "、".join(overlap))
-                                st.stop()
-                            backups_clean = [m for m in backups_clean if m not in members_clean]
-                            g["members"] = members_clean
-                            g["backup_members"] = backups_clean
-                            g["requirements_windows"] = new_windows
-
-                            st.session_state.group_rules = group_rules
-                            save_group_rules(st.session_state.group_rules)
-                            st.toast("✅ 已保存小组修改到 Firebase。")
-                            # If renamed, keep selection in sync
-                            st.session_state["_pending_selected_group_name"] = new_name_norm
-                            st.session_state.initialized = False
-                            st.rerun()
-
-                with action_cols[1]:
-                    confirm_delete = st.checkbox(
-                        "确认删除",
-                        value=False,
-                        key=f"confirm_delete_group_ui__{gid}",
-                    )
-                    if st.button("删除该小组", type="secondary", disabled=not confirm_delete):
-                        group_rules["groups"] = [x for x in group_rules.get("groups", []) if x.get("id") != g.get("id")]
-                        st.session_state.group_rules = group_rules
-                        save_group_rules(st.session_state.group_rules)
-                        st.toast("🗑️ 小组已删除并保存到 Firebase。")
-                        # After delete, reset selection to the first group (if any)
-                        remaining = [x.get("name") for x in group_rules.get("groups", []) if x.get("name")]
-                        if remaining:
-                            st.session_state["_pending_selected_group_name"] = remaining[0]
-                        elif "selected_group_name" in st.session_state:
-                            del st.session_state["selected_group_name"]
-                        st.session_state.initialized = False
-                        st.rerun()
+            with action_cols[1]:
+                confirm_delete = st.checkbox(
+                    "确认删除",
+                    value=False,
+                    key=f"confirm_delete_group_ui__{gid}",
+                )
+                if st.button("删除该小组", type="secondary", disabled=not confirm_delete):
+                    group_rules["groups"] = [x for x in group_rules.get("groups", []) if x.get("id") != g.get("id")]
+                    st.session_state.group_rules = group_rules
+                    save_group_rules(st.session_state.group_rules)
+                    st.toast("🗑️ 小组已删除并保存到 Firebase。")
+                    # After delete, reset selection to the first group (if any)
+                    remaining = [x.get("name") for x in group_rules.get("groups", []) if x.get("name")]
+                    if remaining:
+                        st.session_state["_pending_selected_group_name"] = remaining[0]
+                    elif "selected_group_name" in st.session_state:
+                        del st.session_state["selected_group_name"]
+                    st.session_state.initialized = False
+                    st.rerun()
