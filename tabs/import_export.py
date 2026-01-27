@@ -24,10 +24,26 @@ def _load_from_storage_or_session(fm, role_rules, employees):
     return final_group_rules, final_employees
 
 
-def render_import_export_tab(*, role_rules, employees, fm=None, **_ignored):
+def render_import_export_tab(
+    *,
+    role_rules,
+    employees,
+    fm=None,
+    main_shift_file_handler=None,
+    **_ignored,
+):
     if fm is None:
         import firebase_manager as fm  # fallback when caller doesn't pass it
     st.header("导入/导出")
+
+    st.subheader("导入")
+    if main_shift_file_handler is not None:
+        main_shift_file_handler()
+
+    if st.button("Upload Initial Data to Firebase"):
+        fm.upload_initial_data()
+
+    st.subheader("导出")
     st.caption("用于备份 config 中的规则与员工信息（优先读取 Storage 的 config/*.json）。")
 
     export_group_rules, export_employees = _load_from_storage_or_session(fm, role_rules, employees)

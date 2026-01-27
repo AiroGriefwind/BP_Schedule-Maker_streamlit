@@ -160,11 +160,6 @@ st.title(get_app_title("Auto-Schedule Maker"))
 
 
 
-# NEW: Add a button for one-time data upload (optional but useful)
-if st.button("Upload Initial Data to Firebase"):
-    fm.upload_initial_data()
-
-
 # --- State Management ---
 def refresh_master_data():
     """Refresh employees/role rules/group rules from Firebase and sync availability."""
@@ -191,6 +186,73 @@ def initialize_session_state():
         st.session_state.generated_schedule = None
 
 # --- Helper Functions ---
+def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, delete_employee_fn):
+    st.markdown("**Main Shift Employee Import**")
+    main_shift_file = st.file_uploader("Upload Main Shift Excel", type=["xlsx"])
+    if not main_shift_file:
+        return
+
+    # Pull current employee names for live comparison
+    current_employee_names = [e.name for e in st.session_state.employees]
+    names_detected, names_missing, imported_availability = import_from_excel(
+        main_shift_file,
+        current_employee_names,
+        None,
+    )
+    st.session_state.availability = imported_availability
+
+    df = pd.read_excel(main_shift_file, header=None)
+    imported_col_order = []
+    for name in df.iloc[0]:
+        if pd.notna(name):
+            str_name = str(name).strip()
+            if str_name and str_name not in imported_col_order:
+                imported_col_order.append(str_name)
+    st.session_state.imported_col_order = imported_col_order
+
+    sheet_dates = [str(x).strip() for x in df.iloc[1:, 0] if pd.notna(x) and str(x).strip()]
+    st.session_state.imported_sheet_dates = sheet_dates
+
+    if sheet_dates:
+        st.info(f"First date detected: {sheet_dates[0]}")
+        st.info(f"Last date detected: {sheet_dates[-1]}")
+    else:
+        st.warning("No dates detected in imported sheet.")
+
+    # Identify employees present in the system but NOT in the imported sheet
+    extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
+    st.session_state.extra_employees = extra_employees
+
+    if "extra_employees" in st.session_state and st.session_state.extra_employees:
+        st.subheader("Employees not in imported sheet")
+        for extra_name in st.session_state.extra_employees:
+            with st.form(key=f"remove_{extra_name}_form"):
+                st.write(f"Employee '{extra_name}' found in system but NOT in imported main sheet.")
+                remove = st.form_submit_button(f"Remove '{extra_name}'")
+                if remove:
+                    delete_employee_fn(extra_name)
+                    st.session_state.extra_employees.remove(extra_name)
+                    st.toast(f"🗑️ Employee '{extra_name}' removed from system (not in latest main sheet import).")
+                    st.session_state.initialized = False
+                    st.rerun()
+
+    st.write("Detected Employees from Sheet:")
+    st.write(", ".join(names_detected))
+    if names_missing:
+        st.warning(f"Missing employees in system: {', '.join(names_missing)}")
+        # Prompt user to input all details for each new employee
+        for name in names_missing:
+            with st.form(key=f"add_{name}_form"):
+                st.write(f"Add employee: {name}")
+                role = st.selectbox(f"Role for {name}", list(role_rules.keys()))
+                shift = st.text_input(f"Shift for {name} (e.g., 10-19)")
+                start, end = None, None
+                if "-" in shift:
+                    start, end = shift.split("-", 1)
+                submit = st.form_submit_button("Add Employee")
+                if submit:
+                    add_employee_fn(name, role, start, end)
+                    st.success(f"Employee {name} added.")
 
 # --- Compatibility helpers ---
 def _df_elementwise(df: pd.DataFrame, func):
@@ -1326,80 +1388,7 @@ initialize_session_state()
 availability_df = availability_utils.availability_to_dataframe()
 availability_color_css_df = availability_utils.availability_to_color_css_dataframe()
 
-# --- Sidebar UI ---
-st.sidebar.title("🗓️ Schedule Maker")
-st.sidebar.write("Manage employee availability and generate schedules.")
-
-st.sidebar.header("Main Shift Employee Import")
-main_shift_file = st.sidebar.file_uploader("Upload Main Shift Excel", type=["xlsx"])
-
-if main_shift_file:
-    # Pull current employee names for live comparison
-    current_employee_names = [e.name for e in st.session_state.employees]
-    names_detected, names_missing, imported_availability = import_employees_from_main_excel(
-        main_shift_file,
-        current_employee_names,
-        None
-    )
-    st.session_state.availability = imported_availability
-
-
-    df = pd.read_excel(main_shift_file, header=None)
-    imported_col_order = []
-    for name in df.iloc[0]:
-        if pd.notna(name):
-            str_name = str(name).strip()
-            if str_name and str_name not in imported_col_order:
-                imported_col_order.append(str_name)
-    st.session_state.imported_col_order = imported_col_order
-    
-    sheet_dates = [str(x).strip() for x in df.iloc[1:, 0] if pd.notna(x) and str(x).strip()]
-    st.session_state.imported_sheet_dates = sheet_dates
-
-    if sheet_dates:
-        st.sidebar.info(f"First date detected: {sheet_dates[0]}")
-        st.sidebar.info(f"Last date detected: {sheet_dates[-1]}")
-    else:
-        st.sidebar.warning("No dates detected in imported sheet.")
-
-    # Identify employees present in the system but NOT in the imported sheet
-    extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
-    st.session_state.extra_employees = extra_employees
-
-    if "extra_employees" in st.session_state and st.session_state.extra_employees:
-        st.sidebar.subheader("Employees not in imported sheet")
-        for extra_name in st.session_state.extra_employees:
-            with st.sidebar.form(key=f"remove_{extra_name}_form"):
-                st.write(f"Employee '{extra_name}' found in system but NOT in imported main sheet.")
-                remove = st.form_submit_button(f"Remove '{extra_name}'")
-                if remove:
-                    delete_employee(extra_name)
-                    st.session_state.extra_employees.remove(extra_name)
-                    st.toast(f"🗑️ Employee '{extra_name}' removed from system (not in latest main sheet import).")
-                    st.session_state.initialized = False
-                    st.rerun()
-
-
-    st.sidebar.write("Detected Employees from Sheet:")
-    st.sidebar.write(", ".join(names_detected))
-    if names_missing:
-        st.sidebar.warning(f"Missing employees in system: {', '.join(names_missing)}")
-        # Prompt user to input all details for each new employee
-        for name in names_missing:
-            with st.sidebar.form(key=f"add_{name}_form"):
-                st.write(f"Add employee: {name}")
-                role = st.selectbox(f"Role for {name}", list(ROLE_RULES.keys()))
-                shift = st.text_input(f"Shift for {name} (e.g., 10-19)")
-                start, end = None, None
-                if "-" in shift:
-                    start, end = shift.split("-", 1)
-                submit = st.form_submit_button("Add Employee")
-                if submit:
-                    add_employee(name, role, start, end)
-                    st.success(f"Employee {name} added.")
-
 # --- Main Page UI ---
-st.title("Employee Availability Editor")
 
 employee_tab, group_rules_tab, availability_tab, schedule_tab, import_export_tab = st.tabs(
     ["员工管理", "小组规则", "Availability（未完成）", "生成排班（未完成）", "导入/导出"]
@@ -1449,4 +1438,7 @@ with import_export_tab:
         role_rules=ROLE_RULES,
         employees=st.session_state.employees,
         fm=fm,
+        main_shift_file_handler=lambda: _render_main_shift_import(
+            ROLE_RULES, import_employees_from_main_excel, add_employee, delete_employee
+        ),
     )
