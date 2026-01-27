@@ -465,47 +465,43 @@ def _render_group_rules_manage(
     group_rule_type_help,
     reset_group_edit_widgets,
 ):
-    # Overview
+    # Overview (mobile-friendly, collapsed by default)
     if groups:
-        st.markdown("**概览（点击“成员/备选”可展开查看）**")
-        header_cols = st.columns([2, 2, 4, 1, 1, 1])
-        header_cols[0].markdown("**名称**")
-        header_cols[1].markdown("**类型**")
-        header_cols[2].markdown("**成员/备选**")
-        header_cols[3].markdown("**成员数**")
-        header_cols[4].markdown("**备选数**")
-        header_cols[5].markdown("**规则段数**")
+        with st.expander("概览（点击展开查看）", expanded=False):
+            overview_rows = []
+            for g in groups:
+                name = g.get("name")
+                rt = str(g.get("rule_type") or "routine").strip().lower()
+                rt = rt if rt in group_rule_type_labels else "routine"
+                rt_label = group_rule_type_labels.get(rt, rt)
+                members = g.get("members", []) or []
+                backups = g.get("backup_members", []) or []
+                rules = g.get("requirements_windows", []) or []
+                overview_rows.append(
+                    {
+                        "名称": name,
+                        "类型": rt_label,
+                        "成员数": len(members),
+                        "备选数": len(backups),
+                        "规则段数": len(rules),
+                    }
+                )
+            st.dataframe(pd.DataFrame(overview_rows), width="stretch", hide_index=True)
 
-        for g in groups:
-            name = g.get("name")
-            rt = str(g.get("rule_type") or "routine").strip().lower()
-            rt = rt if rt in group_rule_type_labels else "routine"
-            rt_label = group_rule_type_labels.get(rt, rt)
-            members = g.get("members", []) or []
-            backups = g.get("backup_members", []) or []
-            rules = g.get("requirements_windows", []) or []
-            member_count = len(members)
-            backup_count = len(backups)
-            rules_count = len(rules)
-
-            row_cols = st.columns([2, 2, 4, 1, 1, 1], vertical_alignment="center")
-            with row_cols[0]:
-                st.write(name)
-            with row_cols[1]:
-                st.caption(rt_label)
-            with row_cols[2]:
-                with st.expander(f"成员/备选（{member_count}/{backup_count}）", expanded=False):
-                    if members:
-                        st.write("成员：" + "、".join(members))
-                    else:
-                        st.caption("成员：（无）")
-                    if backups:
-                        st.write("备选：" + "、".join(backups))
-                    else:
-                        st.caption("备选：（无）")
-            row_cols[3].write(member_count)
-            row_cols[4].write(backup_count)
-            row_cols[5].write(rules_count)
+            name_to_group = {g.get("name"): g for g in groups if g.get("name")}
+            sel_name = st.selectbox("查看成员/备选详情", options=list(name_to_group.keys()), key="overview_group_name")
+            sel_group = name_to_group.get(sel_name)
+            if sel_group:
+                members = sel_group.get("members", []) or []
+                backups = sel_group.get("backup_members", []) or []
+                if members:
+                    st.write("成员：" + "、".join(members))
+                else:
+                    st.caption("成员：（无）")
+                if backups:
+                    st.write("备选：" + "、".join(backups))
+                else:
+                    st.caption("备选：（无）")
     else:
         st.info("当前还没有任何小组。你可以在下面创建一个。")
 
