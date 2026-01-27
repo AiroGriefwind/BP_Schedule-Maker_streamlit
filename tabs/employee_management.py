@@ -33,7 +33,7 @@ def render_employee_management_tab(
                 save_employees_to_storage_only(st.session_state.employees)
             st.toast("💾 员工已保存到 Storage/config/employees.json。")
 
-    add_tab, edit_tab = st.tabs(["添加员工", "编辑/删除员工"])
+    add_tab, edit_tab, import_tab = st.tabs(["添加员工", "编辑/删除员工", "导入/诊断"])
 
     with add_tab:
         st.subheader("Add New Employee")
@@ -164,3 +164,81 @@ def render_employee_management_tab(
                 st.toast(f"🗑️ Employee '{selected_employee_name}' deleted.")
                 st.session_state.initialized = False
                 st.rerun()
+
+    with import_tab:
+        st.subheader("导入 employees.json（可选）")
+        st.caption("选择文件后只会在本次会话中解析与预览，不会自动写入 线上数据库。需要你点击“应用/保存”按钮才会生效。")
+        uploaded_employees = st.file_uploader(
+            "选择一个 employees.json（或 线上数据库的备份文件）",
+            type=["json"],
+            key="employees_import_uploader",
+        )
+        if uploaded_employees is not None:
+            try:
+                raw_text = uploaded_employees.getvalue().decode("utf-8", errors="ignore")
+                imported_obj = pd.io.json.loads(raw_text)
+                st.session_state["_imported_employees_preview"] = imported_obj
+            except Exception as e:
+                st.session_state.pop("_imported_employees_preview", None)
+                st.error(f"导入失败：{e}")
+
+        preview_obj = st.session_state.get("_imported_employees_preview")
+        if isinstance(preview_obj, list):
+            st.success(f"已解析：{len(preview_obj)} 名员工。")
+            if preview_obj:
+                names = [x.get("name") for x in preview_obj if isinstance(x, dict) and x.get("name")]
+                if names:
+                    st.caption("预览（前 12 名员工）： " + "、".join([str(x) for x in names[:12]]))
+
+            import_cols = st.columns([1, 1, 2])
+            with import_cols[0]:
+                if st.button("应用到当前会话", type="secondary", key="apply_imported_employees"):
+                    try:
+                        from scheduling_logic import _normalize_employee_records, _build_employees  # type: ignore
+                        records = _normalize_employee_records(preview_obj)
+                        st.session_state.employees = _build_employees(records)
+                        st.toast("已应用导入的员工数据到当前会话（未写入 线上数据库）。")
+                        st.session_state.initialized = False
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"应用失败：{e}")
+            with import_cols[1]:
+                if st.button("应用并保存", type="primary", key="apply_and_save_imported_employees"):
+                    try:
+                        from scheduling_logic import _normalize_employee_records, _build_employees  # type: ignore
+                        records = _normalize_employee_records(preview_obj)
+                        st.session_state.employees = _build_employees(records)
+                        save_employees_to_storage_only(st.session_state.employees)
+                        st.toast("✅ 已导入并保存到 线上数据库。")
+                        st.session_state.initialized = False
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"保存失败：{e}")
+            with import_cols[2]:
+                st.caption("说明：保存仅写入 Storage/config/employees.json，不会自动覆盖 RTDB。")
+
+        st.subheader("当前会话员工（JSON 预览）")
+        def _employee_to_json(emp):
+            return {
+                "name": getattr(emp, "name", None),
+                "role": getattr(emp, "employee_type", None) or getattr(emp, "role", None),
+                "additional_roles": getattr(emp, "additional_roles", None) or [],
+                "start_time": getattr(emp, "start_time", None),
+                "end_time": getattr(emp, "end_time", None),
+            }
+        current_json = [_employee_to_json(e) for e in (st.session_state.employees or [])]
+        st.json(current_json)
+
+        with st.expander("诊断：线上数据库读取到的员工（只读）", expanded=False):
+            try:
+                import firebase_manager as fm  # fallback to default manager
+                raw = fm.get_data("employees")
+                if raw is None:
+                    st.warning("fm.get_data('employees') 返回 None（线上数据库该路径可能为空/无权限/连接异常）。")
+                else:
+                    st.caption(f"fm.get_data('employees') 类型：{type(raw).__name__}")
+                    if isinstance(raw, list):
+                        st.caption(f"records 数量: {len(raw)}")
+                    st.json(raw)
+            except Exception as e:
+                st.error(f"诊断读取失败：{e}")

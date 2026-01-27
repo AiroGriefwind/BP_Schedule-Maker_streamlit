@@ -59,24 +59,24 @@ def render_group_rules_tab(
     action_cols = st.columns([1, 1, 2])
     with action_cols[0]:
         if st.button("刷新", key="group_rules_refresh"):
-            with st.spinner("Refreshing from Firebase..."):
+            with st.spinner("Refreshing from 线上数据库..."):
                 st.session_state.group_rules = load_group_rules()
             st.toast("🔄 已刷新小组规则。")
             st.rerun()
     with action_cols[1]:
         if st.button("手动保存", key="group_rules_save"):
-            with st.spinner("Saving group rules to Firebase..."):
+            with st.spinner("Saving group rules to 线上数据库..."):
                 save_group_rules(st.session_state.group_rules)
-            st.toast("💾 小组规则已保存到 Firebase。")
+            st.toast("💾 小组规则已保存到 线上数据库。")
 
     manage_tab, validate_tab, import_tab = st.tabs(["小组管理", "验证", "导入/诊断"])
 
     with import_tab:
-        # --- Import group_rules.json (dry-run preview; does NOT write to Firebase unless you click save) ---
-        st.markdown("**导入 group_rules.json（可选）**")
-        st.caption("选择文件后只会在本次会话中解析与预览，不会自动写入 Firebase。需要你点击“应用/保存”按钮才会生效。")
+        # --- Import role_rules.json (dry-run preview; does NOT write to DB unless you click save) ---
+        st.markdown("**导入 role_rules.json（可选）**")
+        st.caption("选择文件后只会在本次会话中解析与预览，不会自动写入 线上数据库。需要你点击“应用/保存”按钮才会生效。")
         uploaded_group_rules = st.file_uploader(
-            "选择一个 group_rules.json（或 Firebase 的备份文件）",
+            "选择一个 role_rules.json（或 线上数据库的备份文件）",
             type=["json"],
             key="group_rules_import_uploader",
         )
@@ -108,21 +108,21 @@ def render_group_rules_tab(
             with import_cols[0]:
                 if st.button("应用到当前会话", type="secondary", key="apply_imported_group_rules"):
                     st.session_state.group_rules = preview_obj
-                    st.toast("已应用导入的小组规则到当前会话（未写入 Firebase）。")
+                    st.toast("已应用导入的小组规则到当前会话（未写入 线上数据库）。")
                     st.session_state.initialized = False
                     st.rerun()
             with import_cols[1]:
-                if st.button("应用并保存到 Firebase", type="primary", key="apply_and_save_imported_group_rules"):
+                if st.button("应用并保存", type="primary", key="apply_and_save_imported_group_rules"):
                     st.session_state.group_rules = preview_obj
                     save_group_rules(st.session_state.group_rules)
-                    st.toast("✅ 已导入并保存到 Firebase。")
+                    st.toast("✅ 已导入并保存到 线上数据库。")
                     st.session_state.initialized = False
                     st.rerun()
             with import_cols[2]:
                 st.caption("说明：保存时会进行 schema 规范化；无效规则段（如 start/end 为 None）不会写回。")
 
-        # Diagnostics (helps when different deployments / Firebase envs appear inconsistent)
-        with st.expander("诊断：Firebase 读取到的小组规则（只读）", expanded=False):
+        # Diagnostics (helps when different deployments / DB envs appear inconsistent)
+        with st.expander("诊断：线上数据库读取到的小组规则（只读）", expanded=False):
             try:
                 proj = None
                 try:
@@ -130,11 +130,11 @@ def render_group_rules_tab(
                 except Exception:
                     proj = None
                 if proj:
-                    st.caption(f"Firebase project_id: {proj}")
+                    st.caption(f"线上数据库 project_id: {proj}")
 
                 raw = fm.get_data("group_rules")
                 if raw is None:
-                    st.warning("fm.get_data('group_rules') 返回 None（Firebase 中该路径可能为空/无权限/连接异常）。")
+                    st.warning("fm.get_data('group_rules') 返回 None（线上数据库该路径可能为空/无权限/连接异常）。")
                 else:
                     st.caption(f"fm.get_data('group_rules') 类型：{type(raw).__name__}")
                     if isinstance(raw, dict):
@@ -152,7 +152,7 @@ def render_group_rules_tab(
                     if backup is None:
                         st.warning("Storage 备份读取结果：None（可能 bucket 名称不匹配或无权限）。")
                     else:
-                        st.success("Storage 备份读取成功：config/group_rules.json")
+                        st.success("Storage 备份读取成功：config/role_rules.json")
                         if isinstance(backup, dict):
                             st.caption(f"backup keys: {list(backup.keys())}")
                             st.caption(f"backup updated_at: {backup.get('updated_at')}")
@@ -733,7 +733,7 @@ def _render_group_rules_manage(
 
                         st.session_state.group_rules = group_rules
                         save_group_rules(st.session_state.group_rules)
-                        st.toast("✅ 已保存小组修改到 Firebase。")
+                        st.toast("✅ 已保存小组修改到 线上数据库。")
                         # If renamed, keep selection in sync
                         st.session_state["_pending_selected_group_name"] = new_name_norm
                         st.session_state.initialized = False
@@ -749,7 +749,7 @@ def _render_group_rules_manage(
                     group_rules["groups"] = [x for x in group_rules.get("groups", []) if x.get("id") != g.get("id")]
                     st.session_state.group_rules = group_rules
                     save_group_rules(st.session_state.group_rules)
-                    st.toast("🗑️ 小组已删除并保存到 Firebase。")
+                    st.toast("🗑️ 小组已删除并保存到 线上数据库。")
                     # After delete, reset selection to the first group (if any)
                     remaining = [x.get("name") for x in group_rules.get("groups", []) if x.get("name")]
                     if remaining:
