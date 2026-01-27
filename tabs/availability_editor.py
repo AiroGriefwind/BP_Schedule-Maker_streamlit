@@ -12,6 +12,9 @@ def render_availability_tab(
     *,
     role_rules,
     components,
+    import_from_google_form,
+    export_availability_to_excel,
+    generated_schedule,
 ):
     # --- Availability Editor ---
     st.header("Availability Grid")
@@ -98,3 +101,35 @@ def render_availability_tab(
             dataframe_to_availability(full_edited_df)
     else:
         st.warning("No availability data found. Initialize or import data.")
+
+    st.divider()
+    st.subheader("Data Import")
+    google_form_upload = st.file_uploader("Import from Google Form (Excel)", type=["xlsx"])
+    if google_form_upload:
+        try:
+            with st.spinner("Importing..."):
+                result = import_from_google_form(google_form_upload)
+                st.toast(f"✅ {result}")
+                # Reload data after import
+                st.session_state.initialized = False
+                st.rerun()
+        except Exception as e:
+            st.error(f"Import failed: {e}")
+
+    st.subheader("Data Export")
+    avail_export_data = export_availability_to_excel(st.session_state.availability)
+    st.download_button(
+        label="Export Availability to Excel",
+        data=avail_export_data,
+        file_name="availability_export.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    if generated_schedule is not None and not generated_schedule.empty:
+        schedule_export_data = generated_schedule.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label="Export Schedule to CSV",
+            data=schedule_export_data,
+            file_name="generated_schedule.csv",
+            mime="text/csv",
+        )

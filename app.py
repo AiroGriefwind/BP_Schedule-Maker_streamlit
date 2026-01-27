@@ -12,6 +12,7 @@ from tabs.employee_management import render_employee_management_tab
 from tabs.group_rules import render_group_rules_tab
 from tabs.availability_editor import render_availability_tab
 from tabs.schedule_output import render_schedule_tab
+from tabs.import_export import render_import_export_tab
 from utils import availability_utils
 from scheduling_logic import (
     load_employees,
@@ -1442,64 +1443,11 @@ if st.sidebar.button("Clear All Availability"):
     st.toast("🗑️ Availability cleared and reset.")
     st.rerun()
 
-st.sidebar.header("Data Import")
-google_form_upload = st.sidebar.file_uploader("Import from Google Form (Excel)", type=["xlsx"])
-if google_form_upload:
-    try:
-        with st.spinner("Importing..."):
-            result = import_from_google_form(google_form_upload)
-            st.toast(f"✅ {result}")
-            # Reload data after import
-            st.session_state.initialized = False
-            st.rerun()
-    except Exception as e:
-        st.sidebar.error(f"Import failed: {e}")
-
-
-st.sidebar.header("Data Export")
-# Export Availability
-avail_export_data = export_availability_to_excel(st.session_state.availability)
-st.sidebar.download_button(
-    label="Export Availability to Excel",
-    data=avail_export_data,
-    file_name="availability_export.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
-
-# Export generated schedule
-if st.session_state.generated_schedule is not None and not st.session_state.generated_schedule.empty:
-    schedule_export_data = st.session_state.generated_schedule.to_csv(index=False).encode('utf-8')
-    st.sidebar.download_button(
-        label="Export Schedule to CSV",
-        data=schedule_export_data,
-        file_name="generated_schedule.csv",
-        mime="text/csv",
-    )
-    
-st.sidebar.header("Data Persistence")
-st.sidebar.info("To permanently save changes, download the data files and commit them to your Git repository.")
-
-# Download core data files
-employees_json = json.dumps([emp.__dict__ for emp in st.session_state.employees], indent=4)
-st.sidebar.download_button("Download employees.json", employees_json, "employees.json")
-
-availability_serializable = availability_utils.convert_availability_dates_to_str(
-    st.session_state.availability
-)
-availability_json = json.dumps(availability_serializable, ensure_ascii=False, indent=4)
-
-st.sidebar.download_button("Download availability.json", availability_json, "availability.json")
-
-# Download group rules
-group_rules_json = json.dumps(st.session_state.get("group_rules") or GROUP_RULES, ensure_ascii=False, indent=2)
-st.sidebar.download_button("Download group_rules.json", group_rules_json, "group_rules.json")
-
-
 # --- Main Page UI ---
 st.title("Employee Availability Editor")
 
-employee_tab, group_rules_tab, availability_tab, schedule_tab = st.tabs(
-    ["员工管理", "小组规则", "Availability（未完成）", "生成排班（未完成）"]
+employee_tab, group_rules_tab, availability_tab, schedule_tab, import_export_tab = st.tabs(
+    ["员工管理", "小组规则", "Availability（未完成）", "生成排班（未完成）", "导入/导出"]
 )
 with employee_tab:
     render_employee_management_tab(
@@ -1525,9 +1473,17 @@ with availability_tab:
     render_availability_tab(
         role_rules=ROLE_RULES,
         components=components,
+        import_from_google_form=import_from_google_form,
+        export_availability_to_excel=export_availability_to_excel,
+        generated_schedule=st.session_state.generated_schedule,
     )
 
 
 with schedule_tab:
     render_schedule_tab()
 
+with import_export_tab:
+    render_import_export_tab(
+        role_rules=ROLE_RULES,
+        employees=st.session_state.employees,
+    )
