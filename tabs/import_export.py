@@ -44,25 +44,25 @@ def render_import_export_tab(
             main_shift_file_handler()
 
         st.subheader("恢复线上数据")
-        st.caption("用于检查并恢复 Storage/config 下的 employees.json 与 role_rules.json。")
+        st.caption("用于检查并恢复 Storage/config 下的 employees.json 与 group_rules.json。")
 
         if st.button("验证线上数据完整度", key="validate_config_storage"):
             errors = []
             employees_obj = None
-            role_rules_obj = None
+            group_rules_obj = None
             try:
                 employees_obj = fm.get_json_from_storage("config/employees.json")
             except Exception as e:
                 errors.append(f"employees.json 读取失败：{e}")
             try:
-                role_rules_obj = fm.get_json_from_storage("config/role_rules.json")
+                group_rules_obj = fm.get_json_from_storage("config/group_rules.json")
             except Exception as e:
-                errors.append(f"role_rules.json 读取失败：{e}")
+                errors.append(f"group_rules.json 读取失败：{e}")
 
             if employees_obj is None:
                 errors.append("employees.json 缺失或无法解析。")
-            if role_rules_obj is None:
-                errors.append("role_rules.json 缺失或无法解析。")
+            if group_rules_obj is None:
+                errors.append("group_rules.json 缺失或无法解析。")
 
             if errors:
                 st.warning("检测到问题：\n\n- " + "\n- ".join(errors))
@@ -71,8 +71,8 @@ def render_import_export_tab(
 
             with st.expander("employees.json 预览（只读）", expanded=False):
                 st.json(employees_obj)
-            with st.expander("role_rules.json 预览（只读）", expanded=False):
-                st.json(role_rules_obj)
+            with st.expander("group_rules.json 预览（只读）", expanded=False):
+                st.json(group_rules_obj)
 
         uploader_cols = st.columns(2)
         with uploader_cols[0]:
@@ -92,7 +92,7 @@ def render_import_export_tab(
 
         with uploader_cols[1]:
             uploaded_role_rules = st.file_uploader(
-                "上传 role_rules.json",
+                "上传 group_rules.json",
                 type=["json"],
                 key="restore_role_rules_json",
             )
@@ -100,10 +100,10 @@ def render_import_export_tab(
                 try:
                     raw_text = uploaded_role_rules.getvalue().decode("utf-8", errors="ignore")
                     role_rules_obj = json.loads(raw_text)
-                    fm.save_json_to_storage("config/role_rules.json", role_rules_obj)
-                    st.success("已上传并覆盖 config/role_rules.json。")
+                    fm.save_json_to_storage("config/group_rules.json", role_rules_obj)
+                    st.success("已上传并覆盖 config/group_rules.json。")
                 except Exception as e:
-                    st.error(f"role_rules.json 上传失败：{e}")
+                    st.error(f"group_rules.json 上传失败：{e}")
 
     with export_tab:
         st.caption("用于备份 config 中的规则与员工信息（优先读取 Storage 的 config/*.json）。")
