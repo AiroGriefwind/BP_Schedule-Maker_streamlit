@@ -36,30 +36,32 @@ def render_import_export_tab(
         import firebase_manager as fm  # fallback when caller doesn't pass it
     st.header("导入/导出")
 
-    st.subheader("导入")
-    if main_shift_file_handler is not None:
-        main_shift_file_handler()
+    mode = st.radio("功能", ["导入", "导出"], horizontal=True)
 
-    if st.button("Upload Initial Data to Firebase"):
-        fm.upload_initial_data()
+    if mode == "导入":
+        if main_shift_file_handler is not None:
+            main_shift_file_handler()
 
-    st.subheader("导出")
-    st.caption("用于备份 config 中的规则与员工信息（优先读取 Storage 的 config/*.json）。")
+        if st.button("Upload Initial Data to Firebase"):
+            fm.upload_initial_data()
 
-    export_group_rules, export_employees = _load_from_storage_or_session(fm, role_rules, employees)
+    if mode == "导出":
+        st.caption("用于备份 config 中的规则与员工信息（优先读取 Storage 的 config/*.json）。")
 
-    excel_bytes = export_group_rules_employees_excel(export_group_rules, export_employees)
-    st.download_button(
-        label="导出为Excel",
-        data=excel_bytes,
-        file_name="group_rules_employees.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        export_group_rules, export_employees = _load_from_storage_or_session(fm, role_rules, employees)
 
-    zip_bytes = export_group_rules_employees_zip(export_group_rules, export_employees)
-    st.download_button(
-        label="导出为JSON",
-        data=zip_bytes,
-        file_name="group_rules_employees.zip",
-        mime="application/zip",
-    )
+        excel_bytes = export_group_rules_employees_excel(export_group_rules, export_employees)
+        st.download_button(
+            label="导出为Excel",
+            data=excel_bytes,
+            file_name="group_rules_employees.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        zip_bytes = export_group_rules_employees_zip(export_group_rules, export_employees)
+        st.download_button(
+            label="导出为JSON",
+            data=zip_bytes,
+            file_name="group_rules_employees.zip",
+            mime="application/zip",
+        )
