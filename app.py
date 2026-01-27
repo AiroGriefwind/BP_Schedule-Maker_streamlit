@@ -213,31 +213,33 @@ def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, de
     sheet_dates = [str(x).strip() for x in df.iloc[1:, 0] if pd.notna(x) and str(x).strip()]
     st.session_state.imported_sheet_dates = sheet_dates
 
+    st.write("检测到的员工（来自总表）：")
+    st.write(", ".join(names_detected))
+
     if sheet_dates:
-        st.info(f"First date detected: {sheet_dates[0]}")
-        st.info(f"Last date detected: {sheet_dates[-1]}")
+        st.info(f"检测到的最早日期：{sheet_dates[0]}")
+        st.info(f"检测到的最晚日期：{sheet_dates[-1]}")
     else:
-        st.warning("No dates detected in imported sheet.")
+        st.warning("未在导入总表中检测到日期。")
 
     # Identify employees present in the system but NOT in the imported sheet
     extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
     st.session_state.extra_employees = extra_employees
 
     if "extra_employees" in st.session_state and st.session_state.extra_employees:
-        st.subheader("Employees not in imported sheet")
-        for extra_name in st.session_state.extra_employees:
-            with st.form(key=f"remove_{extra_name}_form"):
-                st.write(f"Employee '{extra_name}' found in system but NOT in imported main sheet.")
-                remove = st.form_submit_button(f"Remove '{extra_name}'")
-                if remove:
-                    delete_employee_fn(extra_name)
-                    st.session_state.extra_employees.remove(extra_name)
-                    st.toast(f"🗑️ Employee '{extra_name}' removed from system (not in latest main sheet import).")
-                    st.session_state.initialized = False
-                    st.rerun()
-
-    st.write("Detected Employees from Sheet:")
-    st.write(", ".join(names_detected))
+        missing_count = len(st.session_state.extra_employees)
+        st.warning(f"未检测到的员工：{missing_count} 人（如需处理，请展开下方列表）")
+        with st.expander(f"未检测到的员工（{missing_count}）", expanded=False):
+            for extra_name in st.session_state.extra_employees:
+                with st.form(key=f"remove_{extra_name}_form"):
+                    st.write(f"员工“{extra_name}”在系统中存在，但未出现在导入的总表中。")
+                    remove = st.form_submit_button(f"移除“{extra_name}”")
+                    if remove:
+                        delete_employee_fn(extra_name)
+                        st.session_state.extra_employees.remove(extra_name)
+                        st.toast(f"🗑️ Employee '{extra_name}' removed from system (not in latest main sheet import).")
+                        st.session_state.initialized = False
+                        st.rerun()
     if names_missing:
         st.warning(f"Missing employees in system: {', '.join(names_missing)}")
         # Prompt user to input all details for each new employee
