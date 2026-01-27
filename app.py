@@ -8,6 +8,7 @@ import streamlit.components.v1 as components
 import re
 from typing import Dict, List, Tuple, Any, Optional
 from pathlib import Path
+from tabs.employee_management import render_employee_management_tab
 from scheduling_logic import (
     load_employees,
     load_data,
@@ -912,103 +913,6 @@ def _build_cell_member_detail_df(
 
 
 # -----------------------------
-# Group member helpers (members vs backups)
-# -----------------------------
-_GROUP_MEMBER_TYPE_LABELS = {"member": "通常成员", "backup": "备选成员"}
-
-
-def _normalize_member_list(values: Any) -> List[str]:
-    if not isinstance(values, list):
-        values = []
-    cleaned = [str(x).strip() for x in values if str(x).strip()]
-    seen = set()
-    return [m for m in cleaned if not (m in seen or seen.add(m))]
-
-
-def _get_employee_group_assignments(employee_name: str, group_rules: Dict[str, Any]) -> List[Dict[str, str]]:
-    assignments: List[Dict[str, str]] = []
-    for g in (group_rules or {}).get("groups", []) or []:
-        gname = str(g.get("name") or "").strip()
-        if not gname:
-            continue
-        members = g.get("members", []) or []
-        backups = g.get("backup_members", []) or []
-        if employee_name in members:
-            assignments.append({"小组": gname, "成员类型": _GROUP_MEMBER_TYPE_LABELS["member"]})
-        if employee_name in backups:
-            confirm = {"小组": gname, "成员类型": _GROUP_MEMBER_TYPE_LABELS["backup"]}
-            assignments.append(confirm)
-    return assignments
-
-
-def _apply_employee_group_assignments(
-    employee_name: str,
-    assignments: List[Dict[str, Any]],
-    group_rules: Dict[str, Any],
-) -> Tuple[Dict[str, Any], List[str], bool]:
-    warnings: List[str] = []
-    changed = False
-    if not employee_name:
-        return group_rules, warnings, changed
-
-    groups = (group_rules or {}).get("groups", []) or []
-    name_to_group = {str(g.get("name") or "").strip(): g for g in groups if str(g.get("name") or "").strip()}
-
-    # Remove existing memberships first (treat assignments as the full desired list).
-    for g in groups:
-        members = g.get("members", []) or []
-        backups = g.get("backup_members", []) or []
-        if employee_name in members:
-            g["members"] = [m for m in members if m != employee_name]
-            changed = True
-        if employee_name in backups:
-            g["backup_members"] = [m for m in backups if m != employee_name]
-            changed = True
-
-    seen_groups = set()
-    for row in assignments or []:
-        if not isinstance(row, dict):
-            continue
-        gname = str(row.get("小组") or "").strip()
-        pool_label = str(row.get("成员类型") or "").strip()
-        if not gname:
-            continue
-        if gname in seen_groups:
-            warnings.append(f"小组“{gname}”在列表中重复，已保留第一条。")
-            continue
-        seen_groups.add(gname)
-        g = name_to_group.get(gname)
-        if not g:
-            warnings.append(f"未找到小组“{gname}”，已跳过。")
-            continue
-        target_key = "members"
-        if pool_label == _GROUP_MEMBER_TYPE_LABELS["backup"]:
-            target_key = "backup_members"
-        elif pool_label and pool_label != _GROUP_MEMBER_TYPE_LABELS["member"]:
-            warnings.append(f"小组“{gname}”的成员类型无效，已按通常成员处理。")
-        cur = _normalize_member_list(g.get(target_key) or [])
-        if employee_name not in cur:
-            cur.append(employee_name)
-            g[target_key] = cur
-            changed = True
-        other_key = "backup_members" if target_key == "members" else "members"
-        other = _normalize_member_list(g.get(other_key) or [])
-        if employee_name in other:
-            g[other_key] = [m for m in other if m != employee_name]
-            changed = True
-
-    # Final cleanup: de-dup + remove overlaps
-    for g in groups:
-        members = _normalize_member_list(g.get("members") or [])
-        backups = _normalize_member_list(g.get("backup_members") or [])
-        backups = [m for m in backups if m not in members]
-        g["members"] = members
-        g["backup_members"] = backups
-
-    return group_rules, warnings, changed
-
-
-# -----------------------------
 # Group rules editor helpers
 # -----------------------------
 _DOW_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -1586,138 +1490,18 @@ st.sidebar.download_button("Download group_rules.json", group_rules_json, "group
 # --- Main Page UI ---
 st.title("Employee Availability Editor")
 
-# --- Employee Management Section ---
-with st.expander("Manage Employees"):
-    action_cols = st.columns([1, 1, 2])
-    with action_cols[0]:
-        if st.button("刷新"):
-            with st.spinner("Refreshing from Firebase..."):
-                refresh_master_data()
-            st.toast("🔄 已刷新员工/角色规则，并同步 availability。")
-            st.rerun()
-    with action_cols[1]:
-        if st.button("手动保存"):
-            with st.spinner("Saving employees to Storage..."):
-                save_employees_to_storage_only(st.session_state.employees)
-            st.toast("💾 员工已保存到 Storage/config/employees.json。")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Add New Employee")
-        with st.form("add_employee_form", clear_on_submit=True):
-            add_name = st.text_input("Name")
-            add_role = st.selectbox("Role", list(ROLE_RULES.keys()))
-            add_start_time = st.text_input("Start Time (for fixed time roles)", "10-19")
-            add_end_time = ""
-            if '-' in add_start_time:
-                add_start_time, add_end_time = add_start_time.split('-')
-
-            group_rules_state = st.session_state.get("group_rules") or GROUP_RULES
-            group_names = [g.get("name") for g in group_rules_state.get("groups", []) if g.get("name")]
-            add_group_df = pd.DataFrame(columns=["小组", "成员类型"])
-            if group_names:
-                st.markdown("**小组分配（可选）**")
-                st.caption("可为该员工选择多个小组，并指定为“通常成员”或“备选成员”。")
-                add_group_df = st.data_editor(
-                    add_group_df,
-                    num_rows="dynamic",
-                    width="stretch",
-                    hide_index=True,
-                    column_config={
-                        "小组": st.column_config.SelectboxColumn("小组", options=group_names, required=True),
-                        "成员类型": st.column_config.SelectboxColumn(
-                            "成员类型",
-                            options=list(_GROUP_MEMBER_TYPE_LABELS.values()),
-                            required=True,
-                        ),
-                    },
-                    key="add_employee_group_assignments",
-                )
-            else:
-                st.caption("暂无小组规则，创建后可在员工信息中分配。")
-            
-            if st.form_submit_button("Add Employee"):
-                add_employee(add_name, add_role, start_time=add_start_time, end_time=add_end_time)
-                if group_names:
-                    assignments = add_group_df.to_dict("records") if isinstance(add_group_df, pd.DataFrame) else []
-                    updated_rules, warnings, changed = _apply_employee_group_assignments(
-                        add_name.strip(), assignments, group_rules_state
-                    )
-                    if changed:
-                        st.session_state.group_rules = updated_rules
-                        save_group_rules(updated_rules)
-                    for w in warnings:
-                        st.warning(w)
-                st.toast(f"✅ Employee '{add_name}' added.")
-                st.session_state.initialized = False
-                st.rerun()
-                
-    with col2:
-        st.subheader("Edit or Delete Employee")
-        employees_list = st.session_state.employees
-        selected_employee_name = st.selectbox("Select Employee to Edit/Delete", [e.name for e in employees_list])
-        
-        if selected_employee_name:
-            emp_to_edit = next((e for e in employees_list if e.name == selected_employee_name), None)
-            
-            with st.form("edit_employee_form"):
-                st.write(f"Editing: **{emp_to_edit.name}**")
-                new_name = st.text_input("New Name", value=emp_to_edit.name)
-                new_role = st.selectbox("New Role", list(ROLE_RULES.keys()), index=list(ROLE_RULES.keys()).index(emp_to_edit.employee_type))
-                new_shift = st.text_input("New Shift (e.g., 10-19)", value=f"{emp_to_edit.start_time}-{emp_to_edit.end_time}" if emp_to_edit.start_time else "")
-
-                group_rules_state = st.session_state.get("group_rules") or GROUP_RULES
-                group_names = [g.get("name") for g in group_rules_state.get("groups", []) if g.get("name")]
-                edit_group_df = pd.DataFrame(_get_employee_group_assignments(emp_to_edit.name, group_rules_state))
-                if edit_group_df.empty:
-                    edit_group_df = pd.DataFrame(columns=["小组", "成员类型"])
-                if group_names:
-                    st.markdown("**小组分配（可选）**")
-                    st.caption("每行代表该员工在一个小组中的身份。")
-                    edit_group_df = st.data_editor(
-                        edit_group_df,
-                        num_rows="dynamic",
-                        width="stretch",
-                        hide_index=True,
-                        column_config={
-                            "小组": st.column_config.SelectboxColumn("小组", options=group_names, required=True),
-                            "成员类型": st.column_config.SelectboxColumn(
-                                "成员类型",
-                                options=list(_GROUP_MEMBER_TYPE_LABELS.values()),
-                                required=True,
-                            ),
-                        },
-                        key=f"edit_employee_group_assignments_{emp_to_edit.name}",
-                    )
-                else:
-                    st.caption("暂无小组规则，创建后可在员工信息中分配。")
-                
-                submitted = st.form_submit_button("Update Employee")
-                if submitted:
-                    start_time, end_time = (new_shift.split('-') if '-' in new_shift else (None, None))
-                    edit_employee(emp_to_edit.name, new_name, new_role, new_start_time=start_time, new_end_time=end_time)
-                    if group_names:
-                        assignments = edit_group_df.to_dict("records") if isinstance(edit_group_df, pd.DataFrame) else []
-                        name_for_groups = new_name.strip() if new_name.strip() else emp_to_edit.name
-                        updated_rules, warnings, changed = _apply_employee_group_assignments(
-                            name_for_groups,
-                            assignments,
-                            group_rules_state,
-                        )
-                        if changed:
-                            st.session_state.group_rules = updated_rules
-                            save_group_rules(updated_rules)
-                        for w in warnings:
-                            st.warning(w)
-                    st.toast(f"✅ Employee '{new_name}' updated.")
-                    st.session_state.initialized = False
-                    st.rerun()
-
-            if st.button(f"Delete {selected_employee_name}", type="secondary"):
-                delete_employee(selected_employee_name)
-                st.toast(f"🗑️ Employee '{selected_employee_name}' deleted.")
-                st.session_state.initialized = False
-                st.rerun()
+employee_tab = st.tabs(["员工管理"])[0]
+with employee_tab:
+    render_employee_management_tab(
+        refresh_master_data=refresh_master_data,
+        save_employees_to_storage_only=save_employees_to_storage_only,
+        add_employee=add_employee,
+        edit_employee=edit_employee,
+        delete_employee=delete_employee,
+        save_group_rules=save_group_rules,
+        ROLE_RULES=ROLE_RULES,
+        GROUP_RULES=GROUP_RULES,
+    )
 
 
 # --- Custom Group Rules (Team Rules) ---
