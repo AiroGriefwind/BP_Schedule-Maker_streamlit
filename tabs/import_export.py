@@ -36,16 +36,16 @@ def render_import_export_tab(
         import firebase_manager as fm  # fallback when caller doesn't pass it
     st.header("导入/导出")
 
-    mode = st.radio("功能", ["导入", "导出"], horizontal=True)
+    import_tab, export_tab = st.tabs(["导入", "导出"])
 
-    if mode == "导入":
+    with import_tab:
         if main_shift_file_handler is not None:
             main_shift_file_handler()
 
         if st.button("Upload Initial Data to Firebase"):
             fm.upload_initial_data()
 
-    if mode == "导出":
+    with export_tab:
         st.caption("用于备份 config 中的规则与员工信息（优先读取 Storage 的 config/*.json）。")
 
         export_group_rules, export_employees = _load_from_storage_or_session(fm, role_rules, employees)
