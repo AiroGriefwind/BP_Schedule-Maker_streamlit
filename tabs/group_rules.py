@@ -439,9 +439,9 @@ def render_group_rules_tab(
                                 st.dataframe(deficits_df, width="stretch", height=360)
 
             # Explicit save hint for imported availability
-            st.caption("提示：侧边栏导入总表只会更新本次会话内的数据；如需写入 Firebase，请点击侧边栏的 “Save All Changes”。")
+            #st.caption("提示：侧边栏导入总表只会更新本次会话内的数据；如需写入 Firebase，请点击侧边栏的 “Save All Changes”。")
 
-        st.caption("说明：小组规则用于校验排班是否满足“某时段最少需要多少人值更”。此处按“30 分钟时段”进行覆盖校验与可视化。")
+        #st.caption("说明：小组规则用于校验排班是否满足“某时段最少需要多少人值更”。此处按“30 分钟时段”进行覆盖校验与可视化。")
 
     with manage_tab:
         _render_group_rules_manage(
