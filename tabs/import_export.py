@@ -1,8 +1,8 @@
 import streamlit as st
 
 from utils.export_utils import (
-    export_role_rules_employees_excel,
-    export_role_rules_employees_zip,
+    export_group_rules_employees_excel,
+    export_group_rules_employees_zip,
 )
 
 
@@ -30,20 +30,20 @@ def render_import_export_tab(*, role_rules, employees, fm=None, **_ignored):
     st.header("导入/导出")
     st.caption("用于备份 config 中的规则与员工信息（优先读取 Storage 的 config/*.json）。")
 
-    export_role_rules, export_employees = _load_from_storage_or_session(fm, role_rules, employees)
+    export_group_rules, export_employees = _load_from_storage_or_session(fm, role_rules, employees)
 
-    excel_bytes = export_role_rules_employees_excel(export_role_rules, export_employees)
+    excel_bytes = export_group_rules_employees_excel(export_group_rules, export_employees)
     st.download_button(
         label="导出为Excel",
         data=excel_bytes,
-        file_name="role_rules_employees.xlsx",
+        file_name="group_rules_employees.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    zip_bytes = export_role_rules_employees_zip(export_role_rules, export_employees)
+    zip_bytes = export_group_rules_employees_zip(export_group_rules, export_employees)
     st.download_button(
         label="导出为JSON",
         data=zip_bytes,
-        file_name="role_rules_employees.zip",
+        file_name="group_rules_employees.zip",
         mime="application/zip",
     )
