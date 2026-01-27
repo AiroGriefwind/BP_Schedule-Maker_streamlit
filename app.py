@@ -164,7 +164,12 @@ st.title(get_app_title("Auto-Schedule Maker"))
 def refresh_master_data():
     """Refresh employees/role rules/group rules from Firebase and sync availability."""
     load_role_rules()
-    st.session_state.employees = load_employees()
+    restored_employees = None
+    try:
+        restored_employees = restore_employees_from_storage()
+    except Exception:
+        restored_employees = None
+    st.session_state.employees = restored_employees if restored_employees is not None else load_employees()
     st.session_state.group_rules = load_group_rules()
     # Sync employees with availability data
     sync_availability()
