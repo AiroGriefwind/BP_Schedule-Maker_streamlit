@@ -4,6 +4,8 @@ from datetime import datetime, timedelta
 import os
 import json
 import uuid
+import io
+import hashlib
 import streamlit.components.v1 as components
 import re
 from typing import Dict, List, Tuple, Any, Optional
@@ -191,22 +193,76 @@ def initialize_session_state():
         st.session_state.generated_schedule = None
 
 # --- Helper Functions ---
-def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, delete_employee_fn):
-    st.markdown("**导入总表（主更表）**")
-    main_shift_file = st.file_uploader("上传总表 Excel", type=["xlsx"])
-    if not main_shift_file:
-        return
+def _safe_filename(name: str) -> str:
+    raw = os.path.basename(name or "").strip()
+    if not raw:
+        return "master_table.xlsx"
+    # Replace unsafe characters for storage paths
+    cleaned = re.sub(r"[^A-Za-z0-9._\-() ]+", "_", raw)
+    return cleaned.strip() or "master_table.xlsx"
 
+
+def _master_table_month(dt: datetime) -> str:
+    return f"{dt.year}-{dt.month:02d}"
+
+
+def _build_master_table_paths(file_name: str, now_dt: datetime) -> Tuple[str, str, str]:
+    month = _master_table_month(now_dt)
+    base_name = _safe_filename(file_name)
+    stem, ext = os.path.splitext(base_name)
+    ext = ext if ext else ".xlsx"
+    unique = now_dt.strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    stored_name = f"{stem}_{unique}{ext}"
+    folder = f"master_tables/{month}"
+    remote_path = f"{folder}/{stored_name}"
+    meta_path = f"{remote_path}.json"
+    return month, remote_path, meta_path
+
+
+def _save_master_table_to_storage(fm, excel_bytes: bytes, file_name: str) -> Optional[Dict[str, Any]]:
+    if not hasattr(fm, "save_bytes_to_storage"):
+        return None
+    now_dt = datetime.now()
+    month, remote_path, meta_path = _build_master_table_paths(file_name, now_dt)
+    meta = {
+        "original_name": file_name,
+        "stored_name": os.path.basename(remote_path),
+        "stored_path": remote_path,
+        "month": month,
+        "uploaded_at": now_dt.isoformat(),
+        "last_read_at": None,
+    }
+    fm.save_bytes_to_storage(
+        remote_path,
+        excel_bytes,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    fm.save_json_to_storage(meta_path, meta)
+    meta["meta_path"] = meta_path
+    return meta
+
+
+def _apply_master_table_import(
+    *,
+    excel_bytes: bytes,
+    file_name: str,
+    role_rules,
+    import_from_excel,
+    add_employee_fn,
+    delete_employee_fn,
+    fm=None,
+    meta: Optional[Dict[str, Any]] = None,
+):
     # Pull current employee names for live comparison
     current_employee_names = [e.name for e in st.session_state.employees]
     names_detected, names_missing, imported_availability = import_from_excel(
-        main_shift_file,
+        io.BytesIO(excel_bytes),
         current_employee_names,
         None,
     )
     st.session_state.availability = imported_availability
 
-    df = pd.read_excel(main_shift_file, header=None)
+    df = pd.read_excel(io.BytesIO(excel_bytes), header=None)
     imported_col_order = []
     for name in df.iloc[0]:
         if pd.notna(name):
@@ -217,6 +273,14 @@ def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, de
 
     sheet_dates = [str(x).strip() for x in df.iloc[1:, 0] if pd.notna(x) and str(x).strip()]
     st.session_state.imported_sheet_dates = sheet_dates
+
+    # Update last-read timestamp for this master table
+    if fm is not None and meta and meta.get("meta_path"):
+        meta["last_read_at"] = datetime.now().isoformat()
+        try:
+            fm.save_json_to_storage(meta["meta_path"], meta)
+        except Exception:
+            pass
 
     st.write("检测到的员工（来自总表）：")
     st.write(", ".join(names_detected))
@@ -260,6 +324,190 @@ def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, de
                 if submit:
                     add_employee_fn(name, role, start, end)
                     st.success(f"Employee {name} added.")
+
+
+def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, delete_employee_fn, fm=None):
+    st.markdown("**导入总表（主更表）**")
+    main_shift_file = st.file_uploader("上传总表 Excel", type=["xlsx"], key="main_shift_uploader")
+    if not main_shift_file:
+        return
+
+    excel_bytes = main_shift_file.getvalue()
+    if not excel_bytes:
+        st.warning("上传的文件为空。")
+        return
+
+    # Save to storage (month folder), then apply import
+    meta = None
+    try:
+        meta = _save_master_table_to_storage(fm, excel_bytes, main_shift_file.name) if fm else None
+        if meta:
+            st.session_state.master_table_meta = meta
+            st.session_state.master_table_path = meta.get("stored_path")
+            st.session_state.master_table_name = meta.get("original_name")
+            st.session_state.master_table_month = meta.get("month")
+            st.success(f"已保存到 Storage：{meta.get('month')} / {os.path.basename(meta.get('stored_path', ''))}")
+    except Exception as e:
+        st.warning(f"保存到 Storage 失败：{e}")
+
+    _apply_master_table_import(
+        excel_bytes=excel_bytes,
+        file_name=main_shift_file.name,
+        role_rules=role_rules,
+        import_from_excel=import_from_excel,
+        add_employee_fn=add_employee_fn,
+        delete_employee_fn=delete_employee_fn,
+        fm=fm,
+        meta=meta,
+    )
+
+
+def _format_master_table_label(rec: Dict[str, Any]) -> str:
+    month = rec.get("month") or "未知月份"
+    original_name = rec.get("original_name")
+    stored_name = rec.get("stored_name") or os.path.basename(rec.get("path") or "")
+    if original_name and stored_name and original_name != stored_name:
+        name = f"{original_name}（{stored_name}）"
+    else:
+        name = original_name or stored_name
+    return f"{month} / {name}"
+
+
+def _list_master_tables(fm) -> List[Dict[str, Any]]:
+    if fm is None or not hasattr(fm, "list_storage_files"):
+        return []
+    try:
+        paths = fm.list_storage_files("master_tables/")
+    except Exception:
+        paths = []
+    rows: List[Dict[str, Any]] = []
+    for p in paths or []:
+        if not str(p).lower().endswith(".xlsx"):
+            continue
+        month = ""
+        try:
+            parts = str(p).split("/")
+            if len(parts) >= 2:
+                month = parts[-2]
+        except Exception:
+            month = ""
+        meta_path = f"{p}.json"
+        meta = None
+        try:
+            meta = fm.get_json_from_storage(meta_path)
+        except Exception:
+            meta = None
+        rec = {
+            "path": p,
+            "month": (meta or {}).get("month") or month,
+            "original_name": (meta or {}).get("original_name"),
+            "stored_name": (meta or {}).get("stored_name") or os.path.basename(p),
+            "uploaded_at": (meta or {}).get("uploaded_at"),
+            "last_read_at": (meta or {}).get("last_read_at"),
+            "meta_path": meta_path,
+            "meta": meta,
+        }
+        rec["label"] = _format_master_table_label(rec)
+        rows.append(rec)
+    # Sort by month then uploaded_at (desc)
+    rows.sort(key=lambda r: (r.get("month") or "", r.get("uploaded_at") or ""), reverse=True)
+    return rows
+
+
+def _load_master_table_from_storage(
+    *,
+    fm,
+    rec: Dict[str, Any],
+    role_rules,
+    import_from_excel,
+    add_employee_fn,
+    delete_employee_fn,
+):
+    if fm is None or not hasattr(fm, "download_bytes_from_storage"):
+        st.sidebar.warning("当前环境未配置 Storage 下载功能。")
+        return
+    path = rec.get("path")
+    if not path:
+        st.sidebar.warning("未选择有效的总表文件。")
+        return
+    try:
+        excel_bytes = fm.download_bytes_from_storage(path)
+    except Exception as e:
+        st.sidebar.error(f"读取总表失败：{e}")
+        return
+    if not excel_bytes:
+        st.sidebar.warning("总表内容为空或无法读取。")
+        return
+
+    st.session_state.master_table_path = path
+    st.session_state.master_table_name = rec.get("original_name") or rec.get("stored_name")
+    st.session_state.master_table_month = rec.get("month")
+    st.session_state.master_table_meta = rec.get("meta") or {"meta_path": rec.get("meta_path")}
+
+    _apply_master_table_import(
+        excel_bytes=excel_bytes,
+        file_name=st.session_state.master_table_name or os.path.basename(path),
+        role_rules=role_rules,
+        import_from_excel=import_from_excel,
+        add_employee_fn=add_employee_fn,
+        delete_employee_fn=delete_employee_fn,
+        fm=fm,
+        meta={"meta_path": rec.get("meta_path"), **(rec.get("meta") or {})},
+    )
+    st.sidebar.success("已读取并应用该总表。")
+
+
+def _render_master_table_sidebar(
+    *,
+    fm,
+    role_rules,
+    import_from_excel,
+    add_employee_fn,
+    delete_employee_fn,
+):
+    st.sidebar.header("总表")
+
+    current_name = st.session_state.get("master_table_name") or st.session_state.get("master_table_path")
+    if current_name:
+        st.sidebar.write(f"当前总表：{current_name}")
+    else:
+        st.sidebar.caption("当前未选择总表。")
+
+    if fm is None:
+        st.sidebar.caption("Storage 未初始化。")
+        return
+
+    refresh = st.sidebar.button("刷新总表列表", key="refresh_master_tables")
+    if refresh or "master_table_index" not in st.session_state:
+        st.session_state.master_table_index = _list_master_tables(fm)
+
+    table_index = st.session_state.get("master_table_index") or []
+    if not table_index:
+        st.sidebar.caption("暂无已保存总表。")
+        return
+
+    labels = [r.get("label") for r in table_index]
+    current_path = st.session_state.get("master_table_path")
+    default_idx = 0
+    for i, r in enumerate(table_index):
+        if r.get("path") == current_path:
+            default_idx = i
+            break
+    selected_label = st.sidebar.selectbox("选择已保存总表", labels, index=default_idx, key="master_table_select")
+    selected_rec = next((r for r in table_index if r.get("label") == selected_label), None)
+    if selected_rec:
+        last_read = selected_rec.get("last_read_at")
+        if last_read:
+            st.sidebar.caption(f"上次读取：{last_read}")
+        if st.sidebar.button("读取选中总表", key="load_master_table"):
+            _load_master_table_from_storage(
+                fm=fm,
+                rec=selected_rec,
+                role_rules=role_rules,
+                import_from_excel=import_from_excel,
+                add_employee_fn=add_employee_fn,
+                delete_employee_fn=delete_employee_fn,
+            )
 
 # --- Compatibility helpers ---
 def _df_elementwise(df: pd.DataFrame, func):
@@ -1395,6 +1643,15 @@ initialize_session_state()
 availability_df = availability_utils.availability_to_dataframe()
 availability_color_css_df = availability_utils.availability_to_color_css_dataframe()
 
+# --- Sidebar: Master Table selection ---
+_render_master_table_sidebar(
+    fm=fm,
+    role_rules=ROLE_RULES,
+    import_from_excel=import_employees_from_main_excel,
+    add_employee_fn=add_employee,
+    delete_employee_fn=delete_employee,
+)
+
 # --- Main Page UI ---
 
 employee_tab, group_rules_tab, availability_tab, schedule_tab, import_export_tab = st.tabs(
@@ -1446,6 +1703,6 @@ with import_export_tab:
         employees=st.session_state.employees,
         fm=fm,
         main_shift_file_handler=lambda: _render_main_shift_import(
-            ROLE_RULES, import_employees_from_main_excel, add_employee, delete_employee
+            ROLE_RULES, import_employees_from_main_excel, add_employee, delete_employee, fm=fm
         ),
     )

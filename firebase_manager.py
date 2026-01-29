@@ -221,6 +221,23 @@ def save_json_to_storage(remote_path, data, content_type="application/json"):
     return f"gs://{bucket.name}/{remote_path}"
 
 
+def save_bytes_to_storage(remote_path, data_bytes, content_type="application/octet-stream"):
+    """
+    Save raw bytes to Firebase Storage.
+    Example remote_path: "master_tables/2026-01/file.xlsx"
+    """
+    bucket_name = _DEFAULT_BUCKET_NAME
+    if not bucket_name:
+        try:
+            bucket_name = st.secrets.get("firebase", {}).get("storage_bucket")
+        except Exception:
+            bucket_name = None
+    bucket = storage.bucket(bucket_name) if bucket_name else storage.bucket()
+    blob = bucket.blob(remote_path)
+    blob.upload_from_string(data_bytes, content_type=content_type)
+    return f"gs://{bucket.name}/{remote_path}"
+
+
 def _candidate_bucket_names():
     """
     Return candidate bucket names for Firebase Storage.
@@ -271,6 +288,41 @@ def get_json_from_storage(remote_path):
         except Exception:
             continue
     return None
+
+
+def download_bytes_from_storage(remote_path):
+    """
+    Download a file from Firebase Storage and return raw bytes.
+    Returns None if not found or on error.
+    """
+    for bucket_name in _candidate_bucket_names() or [None]:
+        try:
+            bucket = storage.bucket(bucket_name) if bucket_name else storage.bucket()
+            blob = bucket.blob(remote_path)
+            try:
+                if not blob.exists():
+                    continue
+            except Exception:
+                pass
+            return blob.download_as_bytes()
+        except Exception:
+            continue
+    return None
+
+
+def list_storage_files(prefix=""):
+    """
+    List file paths in Firebase Storage under a prefix.
+    Returns a list of blob names.
+    """
+    for bucket_name in _candidate_bucket_names() or [None]:
+        try:
+            bucket = storage.bucket(bucket_name) if bucket_name else storage.bucket()
+            blobs = bucket.list_blobs(prefix=prefix)
+            return [b.name for b in blobs]
+        except Exception:
+            continue
+    return []
 
 
 def upload_initial_data(files=None):
