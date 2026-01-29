@@ -19,7 +19,17 @@ def render_availability_tab(
     save_data,
     save_employees,
     clear_availability,
+    add_employee,
+    delete_employee,
 ):
+    # --- Master sheet warnings (show at top) ---
+    missing_in_system = st.session_state.get("imported_names_missing") or []
+    extra_in_system = st.session_state.get("extra_employees") or []
+    if missing_in_system:
+        st.warning(f"总表中有 {len(missing_in_system)} 名员工不在系统中（可在下方展开处理）。")
+    if extra_in_system:
+        st.warning(f"系统中有 {len(extra_in_system)} 名员工未出现在总表中（可在下方展开处理）。")
+
     # --- Availability Editor ---
     st.header("Availability Grid")
     # Role filter
@@ -105,6 +115,47 @@ def render_availability_tab(
             dataframe_to_availability(full_edited_df)
     else:
         st.warning("No availability data found. Initialize or import data.")
+
+    # --- Collapsible missing/extra employee UI (after grid, before actions) ---
+    if missing_in_system:
+        missing_count = len(missing_in_system)
+        with st.expander(f"总表有但系统没有的员工（{missing_count}）", expanded=False):
+            st.caption("可逐个添加到系统中（如无需处理，可忽略）。")
+            for name in missing_in_system:
+                with st.form(key=f"add_{name}_form"):
+                    st.write(f"Add employee: {name}")
+                    role = st.selectbox(f"Role for {name}", list(role_rules.keys()))
+                    shift = st.text_input(f"Shift for {name} (e.g., 10-19)")
+                    start, end = None, None
+                    if "-" in shift:
+                        start, end = shift.split("-", 1)
+                    submit = st.form_submit_button("Add Employee")
+                    if submit:
+                        add_employee(name, role, start, end)
+                        st.success(f"Employee {name} added.")
+                        try:
+                            st.session_state.imported_names_missing.remove(name)
+                        except Exception:
+                            pass
+                        st.rerun()
+
+    if extra_in_system:
+        extra_count = len(extra_in_system)
+        with st.expander(f"系统有但总表没有的员工（{extra_count}）", expanded=False):
+            st.caption("如需保持系统与总表一致，可在此移除。")
+            for extra_name in list(extra_in_system):
+                with st.form(key=f"remove_{extra_name}_form"):
+                    st.write(f"员工“{extra_name}”在系统中存在，但未出现在导入的总表中。")
+                    remove = st.form_submit_button(f"移除“{extra_name}”")
+                    if remove:
+                        delete_employee(extra_name)
+                        try:
+                            st.session_state.extra_employees.remove(extra_name)
+                        except Exception:
+                            pass
+                        st.toast(f"🗑️ Employee '{extra_name}' removed from system (not in latest main sheet import).")
+                        st.session_state.initialized = False
+                        st.rerun()
 
     st.divider()
     st.subheader("Actions")

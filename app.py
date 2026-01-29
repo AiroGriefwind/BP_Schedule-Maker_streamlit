@@ -291,48 +291,13 @@ def _apply_master_table_import(
         except Exception:
             pass
 
-    st.write("检测到的员工（来自总表）：")
-    st.write(", ".join(names_detected))
-
-    if sheet_dates:
-        st.info(f"检测到的最早日期：{sheet_dates[0]}")
-        st.info(f"检测到的最晚日期：{sheet_dates[-1]}")
-    else:
-        st.warning("未在导入总表中检测到日期。")
+    st.session_state.imported_names_detected = names_detected
 
     # Identify employees present in the system but NOT in the imported sheet
     extra_employees = [e.name for e in st.session_state.employees if e.name not in st.session_state.imported_col_order]
     st.session_state.extra_employees = extra_employees
+    st.session_state.imported_names_missing = names_missing
 
-    if "extra_employees" in st.session_state and st.session_state.extra_employees:
-        missing_count = len(st.session_state.extra_employees)
-        st.warning(f"未检测到的员工：{missing_count} 人（如需处理，请展开下方列表）")
-        with st.expander(f"未检测到的员工（{missing_count}）", expanded=False):
-            for extra_name in st.session_state.extra_employees:
-                with st.form(key=f"remove_{extra_name}_form"):
-                    st.write(f"员工“{extra_name}”在系统中存在，但未出现在导入的总表中。")
-                    remove = st.form_submit_button(f"移除“{extra_name}”")
-                    if remove:
-                        delete_employee_fn(extra_name)
-                        st.session_state.extra_employees.remove(extra_name)
-                        st.toast(f"🗑️ Employee '{extra_name}' removed from system (not in latest main sheet import).")
-                        st.session_state.initialized = False
-                        st.rerun()
-    if names_missing:
-        st.warning(f"Missing employees in system: {', '.join(names_missing)}")
-        # Prompt user to input all details for each new employee
-        for name in names_missing:
-            with st.form(key=f"add_{name}_form"):
-                st.write(f"Add employee: {name}")
-                role = st.selectbox(f"Role for {name}", list(role_rules.keys()))
-                shift = st.text_input(f"Shift for {name} (e.g., 10-19)")
-                start, end = None, None
-                if "-" in shift:
-                    start, end = shift.split("-", 1)
-                submit = st.form_submit_button("Add Employee")
-                if submit:
-                    add_employee_fn(name, role, start, end)
-                    st.success(f"Employee {name} added.")
 
 
 def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, delete_employee_fn, fm=None):
@@ -1707,7 +1672,7 @@ _render_master_table_sidebar(
 # --- Main Page UI ---
 
 employee_tab, group_rules_tab, availability_tab, schedule_tab, import_export_tab = st.tabs(
-    ["员工管理", "小组规则", "Availability（未完成）", "生成排班（未完成）", "导入/导出"]
+    ["员工管理", "小组规则", "总表概览（未完成）", "生成排班（未完成）", "导入/导出"]
 )
 with employee_tab:
     render_employee_management_tab(
@@ -1740,6 +1705,8 @@ with availability_tab:
         save_data=save_data,
         save_employees=save_employees,
         clear_availability=clear_availability,
+        add_employee=add_employee,
+        delete_employee=delete_employee,
     )
 
 
