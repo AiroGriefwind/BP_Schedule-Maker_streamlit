@@ -202,6 +202,12 @@ def _safe_filename(name: str) -> str:
     return cleaned.strip() or "master_table.xlsx"
 
 
+def _hash_bytes(data: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(data or b"")
+    return h.hexdigest()
+
+
 def _master_table_month(dt: datetime) -> str:
     return f"{dt.year}-{dt.month:02d}"
 
@@ -224,12 +230,15 @@ def _save_master_table_to_storage(fm, excel_bytes: bytes, file_name: str) -> Opt
         return None
     now_dt = datetime.now()
     month, remote_path, meta_path = _build_master_table_paths(file_name, now_dt)
+    sha256 = _hash_bytes(excel_bytes)
     meta = {
         "original_name": file_name,
         "stored_name": os.path.basename(remote_path),
         "stored_path": remote_path,
         "month": month,
         "uploaded_at": now_dt.isoformat(),
+        "sha256": sha256,
+        "size_bytes": len(excel_bytes or b""),
         "last_read_at": None,
     }
     fm.save_bytes_to_storage(
@@ -337,15 +346,39 @@ def _render_main_shift_import(role_rules, import_from_excel, add_employee_fn, de
         st.warning("上传的文件为空。")
         return
 
+    file_hash = _hash_bytes(excel_bytes)
+    if st.session_state.get("last_master_table_hash") == file_hash and st.session_state.get("master_table_path"):
+        st.info("检测到与当前已加载总表相同的文件，已跳过重复保存。")
+        _apply_master_table_import(
+            excel_bytes=excel_bytes,
+            file_name=main_shift_file.name,
+            role_rules=role_rules,
+            import_from_excel=import_from_excel,
+            add_employee_fn=add_employee_fn,
+            delete_employee_fn=delete_employee_fn,
+            fm=fm,
+            meta=st.session_state.get("master_table_meta"),
+        )
+        return
+
     # Save to storage (month folder), then apply import
     meta = None
     try:
-        meta = _save_master_table_to_storage(fm, excel_bytes, main_shift_file.name) if fm else None
+        if fm:
+            existing = _find_existing_master_table_by_hash(fm, file_hash)
+            if existing:
+                meta = existing.get("meta") or {}
+                meta["stored_path"] = existing.get("path")
+                meta["meta_path"] = existing.get("meta_path")
+                st.info("已存在相同内容的总表，复用已保存版本。")
+            else:
+                meta = _save_master_table_to_storage(fm, excel_bytes, main_shift_file.name)
         if meta:
             st.session_state.master_table_meta = meta
             st.session_state.master_table_path = meta.get("stored_path")
             st.session_state.master_table_name = meta.get("original_name")
             st.session_state.master_table_month = meta.get("month")
+            st.session_state.last_master_table_hash = file_hash
             st.success(f"已保存到 Storage：{meta.get('month')} / {os.path.basename(meta.get('stored_path', ''))}")
     except Exception as e:
         st.warning(f"保存到 Storage 失败：{e}")
@@ -366,11 +399,30 @@ def _format_master_table_label(rec: Dict[str, Any]) -> str:
     month = rec.get("month") or "未知月份"
     original_name = rec.get("original_name")
     stored_name = rec.get("stored_name") or os.path.basename(rec.get("path") or "")
+    uploaded_at = rec.get("uploaded_at")
+    uploaded_short = ""
+    if uploaded_at:
+        try:
+            uploaded_short = str(uploaded_at).replace("T", " ")[:16]
+        except Exception:
+            uploaded_short = str(uploaded_at)
     if original_name and stored_name and original_name != stored_name:
         name = f"{original_name}（{stored_name}）"
     else:
         name = original_name or stored_name
-    return f"{month} / {name}"
+    suffix = f" / {uploaded_short}" if uploaded_short else ""
+    return f"{month} / {name}{suffix}"
+
+
+def _find_existing_master_table_by_hash(fm, sha256: str) -> Optional[Dict[str, Any]]:
+    if not sha256:
+        return None
+    rows = _list_master_tables(fm)
+    for r in rows:
+        meta = r.get("meta") or {}
+        if meta.get("sha256") == sha256:
+            return r
+    return None
 
 
 def _list_master_tables(fm) -> List[Dict[str, Any]]:
